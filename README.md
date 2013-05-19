@@ -9,6 +9,7 @@ Improved PHP omni-completion. Based on the default phpcomplete.vim.
 	 - Recognize `$instance = new Class;` class instantiations.
 	 - Recognize `$instance = Class::getInstance();` singleton instances.
 	 - Recognize `$date = DateTime::createFromFormat(...)` built-in class return types.
+	 - Recognize type hinting in function prototypes.
  * Updated built-in class support with constants, methods and properties
  * Updated list of PHP constants
  * Updated list of built-in PHP functions
@@ -29,3 +30,9 @@ Improved PHP omni-completion. Based on the default phpcomplete.vim.
          Bundle 'shawncplus/phpcomplete.vim'
  3. Source your `.vimrc` with `:so %` or otherwise reload your vim
  4. Run the `:BundleInstall` commmand
+
+## Options
+
+**let g:phpcomplete\_relax\_static\_constraint = 1/0  [default 0]** <br>
+Enables completion for non-static methods when completing for static context (`::`).
+This generates `E_STRICT` level warning, but php calls these methods nontheless.
