@@ -9,6 +9,12 @@
 "			Enables completion for non-static methods when completing for static context (::).
 "			This generates E_STRICT level warning, but php calls these methods nontheless.
 "
+"		let g:phpcomplete_complete_for_unknown_classes = 1/0 [default 1]
+"			Enables completion of variables and functions in "everything under the sun" fassion
+"			when completing for an instance or static class context but the code can't tell the class
+"			or locate the file that it lives in.
+"			The completion list generated this way is only filtered by the completion base
+"			and generally not much more accurate then simple keyword completion.
 "
 "	TODO:
 "	- Switching to HTML (XML?) completion (SQL) inside of phpStrings
@@ -21,6 +27,10 @@
 
 if !exists('g:phpcomplete_relax_static_constraint')
 	let g:phpcomplete_relax_static_constraint = 0
+endif
+
+if !exists('g:phpcomplete_complete_for_unknown_classes')
+	let g:phpcomplete_complete_for_unknown_classes = 1
 endif
 
 function! phpcomplete#CompletePHP(findstart, base)
@@ -78,64 +88,13 @@ function! phpcomplete#CompletePHP(findstart, base)
 	let scontext = substitute(context, '\$\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*$', '', '')
 
 	if scontext =~ '\(\s*new\|extends\)\s\+$'
-		" {{{
-		" Complete class name
-		" Internal solution for finding classes in current file.
-		let file = getline(1, '$')
-		call filter(file,
-				\ 'v:val =~ "class\\s\\+[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*("')
-		let fnames = join(map(tagfiles(), 'escape(v:val, " \\#%")'))
-		let jfile = join(file, ' ')
-		let int_values = split(jfile, 'class\s\+')
-		let int_classes = {}
-		for i in int_values
-			let c_name = matchstr(i, '^[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
-			if c_name != ''
-				let int_classes[c_name] = ''
-			endif
-		endfor
-
-		" Prepare list of classes from tags file
-		let ext_classes = {}
-		let tags = taglist('^'.a:base)
-		for tag in tags
-			if tag.kind ==? 'c'
-				let ext_classes[tag.name] = ''
-			endif
-		endfor
-
-		let classes = sort(keys(int_classes))
-		let classes += sort(keys(ext_classes))
-		let classes += keys(g:php_builtin_classes)
-
-		for m in classes
-			if m =~ '^'.a:base
-				call add(res, m)
-			endif
-		endfor
-
-		let final_menu = []
-		for i in res
-			let menu = ''
-			if (has_key(g:php_builtin_classes, i) && has_key(g:php_builtin_classes[i].methods, '__construct'))
-				let menu = g:php_builtin_classes[i]['methods']['__construct']['signature']
-			endif
-			let final_menu += [{'word':i, 'kind':'c', 'menu':menu}]
-		endfor
-
-		return final_menu
-		" }}}
+		return phpcomplete#CompleteClassName(a:base)
 	elseif scontext =~ '\(->\|::\)$'
 		" {{{
-		" Complete user functions and variables
-		" Internal solution for current file.
-
 		" Get name of the class
 		let classname = phpcomplete#GetClassName(scontext)
 
 		" Get location of class definition, we have to iterate through all
-		" tags files separately because we need relative path from current
-		" file to the exact file (tags file can be in different dir)
 		if classname != ''
 			let classlocation = phpcomplete#GetClassLocation(classname)
 		else
@@ -144,356 +103,26 @@ function! phpcomplete#CompletePHP(findstart, base)
 
 		if classlocation != ''
 			if classlocation == 'VIMPHP_BUILTINOBJECT' && has_key(g:php_builtin_classes, classname)
-				" {{{
-				let class_info = g:php_builtin_classes[classname]
-				let res = []
-
-				let search = matchstr(a:base, '\(->\|::\)\zs.*$\ze')
-				if scontext =~ '->.*$' " complete for everything instance related
-					" methods
-					for [method_name, method_info] in items(class_info.methods)
-						if a:base == '' || method_name =~? '^'.a:base
-							call add(res, {'word':method_name.'(', 'kind': 'f', 'menu': method_info.signature, 'info': method_info.signature })
-						endif
-					endfor
-					" properties
-					for [property_name, property_info] in items(class_info.properties)
-						if a:base == '' || property_name =~? '^'.a:base
-							call add(res, {'word':property_name, 'kind': 'v', 'menu': property_info.type, 'info': property_info.type })
-						endif
-					endfor
-				elseif scontext =~ '::.*$' " complete for everything static
-					" methods
-					for [method_name, method_info] in items(class_info.static_methods)
-						if a:base == '' || method_name =~? '^'.a:base
-							call add(res, {'word':method_name.'(', 'kind': 'f', 'menu': method_info.signature, 'info': method_info.signature })
-						endif
-					endfor
-					" properties
-					for [property_name, property_info] in items(class_info.static_properties)
-						if a:base == '' || property_name =~? '^'.a:base
-							call add(res, {'word':property_name, 'kind': 'v', 'menu': property_info.type, 'info': property_info.type })
-						endif
-					endfor
-					" constants
-					for [constant_name, constant_info] in items(class_info.constants)
-						if a:base == '' || constant_name =~? '^'.a:base
-							call add(res, {'word':constant_name, 'kind': 'd', 'menu': constant_info, 'info': constant_info})
-						endif
-					endfor
-				endif
-				return res
-				" }}}
+				return phpcomplete#CompleteBuiltInClass(scontext, classname, a:base)
 			endif
 
 			if filereadable(classlocation)
-				" {{{
 				let classfile = readfile(classlocation)
 				let classcontent = ''
 				let classcontent .= "\n".phpcomplete#GetClassContents(classfile, classname)
 				let sccontent = split(classcontent, "\n")
 				let classAccess = expand('%:p') == fnamemodify(classlocation, ':p') ? '\\(public\\|private\\|protected\\)' : 'public'
 
-				" limit based on context to static or normal methods
-				if scontext =~ '::'
-					if g:phpcomplete_relax_static_constraint == 1
-						let functions = filter(deepcopy(sccontent),
-								\ 'v:val =~ "^\\s*\\(' . classAccess . '\\s\\+\\)*function"')
-					else
-						let functions = filter(deepcopy(sccontent),
-								\ 'v:val =~ "^\\s*\\(static\\s\\+\\(' . classAccess . '\\)*\\|\\(' . classAccess . '\\s\\+\\)*static\\)\\s\\+function"')
-					endif
-				elseif scontext =~ '->'
-					let functions = filter(deepcopy(sccontent),
-							\ 'v:val =~ "^\\s*\\(' . classAccess . '\\s\\+\\)*function"')
-				endif
-
-				let jfuncs = join(functions, ' ')
-				let sfuncs = split(jfuncs, 'function\s\+')
-				let c_functions = {}
-				for i in sfuncs
-					let f_name = matchstr(i,
-							\ '^&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
-					let f_args = matchstr(i,
-							\ '^&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|$\)')
-					if f_name != ''
-						let c_functions[f_name.'('] = f_args
-					endif
-				endfor
-
-				" limit based on context to static or normal attributes
-				if scontext =~ '::'
-					let variables = filter(deepcopy(sccontent),
-							\ 'v:val =~ "^\\s*\\(static\\|static\\s\\+\\(' . classAccess . '\\|var\\)\\|\\(' . classAccess . '\\|var\\)\\s\\+static\\)\\s\\+\\$"')
-				elseif scontext =~ '->'
-					let variables = filter(deepcopy(sccontent),
-							\ 'v:val =~ "^\\s*\\(' . classAccess . '\\|var\\)\\s\\+\\$"')
-				endif
-				let jvars = join(variables, ' ')
-				let svars = split(jvars, '\$')
-				let c_variables = {}
-				for i in svars
-					let c_var = matchstr(i,
-							\ '^\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
-					if c_var != ''
-						let c_variables[c_var] = ''
-					endif
-				endfor
-
-
-				let constants = filter(deepcopy(sccontent),
-						\ 'v:val =~ "^\\s*const\\s\\+"')
-
-				let jcons = join(constants, ' ')
-				let scons = split(jcons, 'const')
-
-				let c_constants = {}
-				for i in scons
-					let c_con = matchstr(i,
-							\ '^\s*\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
-					if c_con != ''
-						let c_constants[c_con] = ''
-					endif
-				endfor
-
-				let all_values = {}
-				call extend(all_values, c_functions)
-				call extend(all_values, c_variables)
-				call extend(all_values, c_constants)
-
-				for m in sort(keys(all_values))
-					if m =~ '^'.a:base && m !~ '::'
-						call add(res, m)
-					elseif m =~ '::'.a:base
-						call add(res2, m)
-					endif
-				endfor
-
-				let start_list = res + res2
-
-				let final_list = []
-				for i in start_list
-					if has_key(c_variables, i)
-						let class = ' '
-						if all_values[i] != ''
-							let class = i.' class '
-						endif
-						let final_list +=
-								\ [{'word': scontext =~ '::' ? '$'.i : i,
-								\	'info':class.all_values[i],
-								\	'menu':class.all_values[i],
-								\	'kind':'v'}]
-					elseif has_key(c_constants, i)
-						let final_list +=
-								\ [{'word':i,
-								\	'info':i.all_values[i],
-								\	'menu':all_values[i],
-								\	'kind':'d'}]
-					else
-						let final_list +=
-								\ [{'word':substitute(i, '.*::', '', ''),
-								\	'info':i.all_values[i].')',
-								\	'menu':all_values[i].')',
-								\	'kind':'f'}]
-					endif
-				endfor
-
-				return final_list
-
-				" }}}
+				return phpcomplete#CompleteUserClass(scontext, a:base, sccontent, classAccess)
 			endif
-
 		endif
 
-		if a:base =~ '^\$'
-			let adddollar = '$'
-		else
-			let adddollar = ''
-		endif
-		let file = getline(1, '$')
-		let jfile = join(file, ' ')
-		let sfile = split(jfile, '\$')
-		let int_vars = {}
-		for i in sfile
-			if i =~ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*=\s*new'
-				let val = matchstr(i, '^[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*').'->'
-			else
-				let val = matchstr(i, '^[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
-			endif
-			if val !~ ''
-				let int_vars[adddollar.val] = ''
-			endif
-		endfor
-
-		" ctags has good support for PHP, use tags file for external
-		" variables and functions
-		let ext_vars = {}
-		let ext_functions = {}
-		let tags = taglist('^'.substitute(a:base, '^\$', '', ''))
-		for tag in tags
-			if tag.kind ==? 'v'
-				let item = tag.name
-				" Add -> if it is possible object declaration
-				let classname = ''
-				if tag.cmd =~? item.'\s*=\s*new\s\+'
-					let item = item.'->'
-					let classname = matchstr(tag.cmd,
-								\ '=\s*new\s\+\zs[a-zA-Z_0-9\x7f-\xff]\+\ze')
-				endif
-				let ext_vars[adddollar.item] = classname
-			elseif tag.kind ==? 'f'
-				let item = tag.name
-				let prototype = matchstr(tag.cmd,
-						\ 'function\s\+&\?[^[:space:]]\+\s*(\s*\zs.\{-}\ze\s*)\s*{\?')
-				let ext_functions[item.'('] = prototype.') - '.tag['filename']
-			endif
-		endfor
-
-		" Now we have all variables in int_vars dictionary
-		call extend(int_vars, ext_vars)
-
-		" Internal solution for finding functions in current file.
-		let file = getline(1, '$')
-		call filter(file,
-				\ 'v:val =~ "function\\s\\+&\\?[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*("')
-		let jfile = join(file, ' ')
-		let int_values = split(jfile, 'function\s\+')
-		let int_functions = {}
-		for i in int_values
-			let f_name = matchstr(i,
-					\ '^&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
-			let f_args = matchstr(i,
-					\ '^&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|$\)')
-
-			let int_functions[f_name.'('] = f_args.')'
-		endfor
-
-		let all_values = {}
-		call extend(all_values, int_functions)
-		call extend(all_values, ext_functions)
-		call extend(all_values, int_vars) " external variables are already in
-		call extend(all_values, g:php_builtin_object_functions)
-
-		for m in sort(keys(all_values))
-			if m =~ '\(^\|::\)'.a:base
-				call add(res, m)
-			endif
-		endfor
-
-		let start_list = res
-
-		let final_list = []
-		for i in start_list
-			if has_key(int_vars, i)
-				let class = ' '
-				if all_values[i] != ''
-					let class = i.' class '
-				endif
-				let final_list += [{'word':i, 'info':class.all_values[i], 'kind':'v'}]
-			else
-				let final_list +=
-						\ [{'word':substitute(i, '.*::', '', ''),
-						\	'info':i.all_values[i],
-						\	'menu':all_values[i],
-						\	'kind':'f'}]
-			endif
-		endfor
-
-		return final_list
-		" }}}
+		return phpcomplete#CompleteUnknownClass(a:base, scontext)
+	 " }}}
 	endif
 
 	if a:base =~ '^\$'
-		" {{{
-		" Complete variables
-		" Built-in variables {{{
-		let g:php_builtin_vars = {'$GLOBALS':'',
-								\ '$_SERVER':'',
-								\ '$_GET':'',
-								\ '$_POST':'',
-								\ '$_COOKIE':'',
-								\ '$_FILES':'',
-								\ '$_ENV':'',
-								\ '$_REQUEST':'',
-								\ '$_SESSION':'',
-								\ '$HTTP_SERVER_VARS':'',
-								\ '$HTTP_ENV_VARS':'',
-								\ '$HTTP_COOKIE_VARS':'',
-								\ '$HTTP_GET_VARS':'',
-								\ '$HTTP_POST_VARS':'',
-								\ '$HTTP_POST_FILES':'',
-								\ '$HTTP_SESSION_VARS':'',
-								\ '$php_errormsg':'',
-								\ '$this':''
-								\ }
-		" }}}
-
-		" Internal solution for current file.
-		let file = getline(1, '$')
-		let jfile = join(file, ' ')
-		let int_vals = split(jfile, '\ze\$')
-		let int_vars = {}
-		for i in int_vals
-			if i =~ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*=\s*new'
-				let val = matchstr(i,
-						\ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*').'->'
-			else
-				let val = matchstr(i,
-						\ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
-			endif
-			if val != ''
-				let int_vars[val] = ''
-			endif
-		endfor
-
-		call extend(int_vars,g:php_builtin_vars)
-
-		if a:base =~ '^\$'
-			let adddollar = '$'
-		else
-			let adddollar = ''
-		endif
-		" ctags has support for PHP, use tags file for external variables
-		let ext_vars = {}
-		let tags = taglist('^'.substitute(a:base, '^\$', '', ''))
-		for tag in tags
-			if tag.kind ==? 'v'
-				let item = tag.name
-				let m_menu = ''
-				if tag.cmd =~ tag['name'].'\s*=\s*new\s\+'
-					let item = item.'->'
-					let m_menu = matchstr(tag.cmd,
-							\ '=\s*new\s\+\zs[a-zA-Z_0-9\x7f-\xff]\+\ze')
-				endif
-				let ext_vars[adddollar.item] = m_menu
-			endif
-		endfor
-
-		call extend(int_vars, ext_vars)
-
-		for m in sort(keys(int_vars))
-			if m =~ '^\'.a:base
-				call add(res, m)
-			endif
-		endfor
-
-		let int_list = res
-
-		let int_dict = []
-		for i in int_list
-			if int_vars[i] != ''
-				let class = ' '
-				if int_vars[i] != ''
-					let class = i.' class '
-				endif
-				let int_dict += [{'word':i, 'info':class.int_vars[i], 'menu':int_vars[i], 'kind':'v'}]
-			else
-				let int_dict += [{'word':i, 'kind':'v'}]
-			endif
-		endfor
-
-		return int_dict
-		" }}}
+		return phpcomplete#CompleteVariable(a:base)
 	else
 		" {{{
 		" Complete everything else -
@@ -623,6 +252,371 @@ function! phpcomplete#CompletePHP(findstart, base)
 	endif
 
 endfunction
+
+function! phpcomplete#CompleteUnknownClass(base, scontext) " {{{
+	let res = []
+
+	if g:phpcomplete_complete_for_unknown_classes != 1
+		return []
+	endif
+
+	if a:base =~ '^\$'
+		let adddollar = '$'
+	else
+		let adddollar = ''
+	endif
+
+	let file = getline(1, '$')
+
+	" Internal solution for finding object properties in current file.
+	if a:scontext =~ '::'
+		let variables = filter(deepcopy(file),
+					\ 'v:val =~ "^\\s*\\(static\\|static\\s\\+\\(public\\|var\\)\\|\\(public\\|var\\)\\s\\+static\\)\\s\\+\\$"')
+	elseif a:scontext =~ '->'
+		let variables = filter(deepcopy(file),
+					\ 'v:val =~ "^\\s*\\(public\\|var\\)\\s\\+\\$"')
+	endif
+	let jvars = join(variables, ' ')
+	let svars = split(jvars, '\$')
+	let int_vars = {}
+	for i in svars
+		let c_var = matchstr(i,
+					\ '^\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
+		if c_var != ''
+			let int_vars[adddollar.c_var] = ''
+		endif
+	endfor
+
+	" Internal solution for finding functions in current file.
+	call filter(deepcopy(file),
+			\ 'v:val =~ "function\\s\\+&\\?[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*("')
+	let jfile = join(file, ' ')
+	let int_values = split(jfile, 'function\s\+')
+	let int_functions = {}
+	for i in int_values
+		let f_name = matchstr(i,
+				\ '^&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
+		let f_args = matchstr(i,
+				\ '^&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|$\)')
+
+		let int_functions[f_name.'('] = f_args.')'
+	endfor
+
+	" collect external functions from tags
+	let ext_functions = {}
+	let tags = taglist('^'.substitute(a:base, '^\$', '', ''))
+	for tag in tags
+		if tag.kind ==? 'f'
+			let item = tag.name
+			let prototype = matchstr(tag.cmd,
+					\ 'function\s\+&\?[^[:space:]]\+\s*(\s*\zs.\{-}\ze\s*)\s*{\?')
+			let ext_functions[item.'('] = prototype.') - '.tag['filename']
+		endif
+	endfor
+
+	let all_values = {}
+	call extend(all_values, int_functions)
+	call extend(all_values, ext_functions)
+	call extend(all_values, int_vars) " external variables are already in
+	call extend(all_values, g:php_builtin_object_functions)
+
+	for m in sort(keys(all_values))
+		if m =~ '\(^\|::\)'.a:base
+			call add(res, m)
+		endif
+	endfor
+
+	let start_list = res
+
+	let final_list = []
+	for i in start_list
+		if has_key(int_vars, i)
+			let class = ' '
+			if all_values[i] != ''
+				let class = i.' class '
+			endif
+			let final_list += [{'word':i, 'info':class.all_values[i], 'kind':'v'}]
+		else
+			let final_list +=
+					\ [{'word':substitute(i, '.*::', '', ''),
+					\	'info':i.all_values[i],
+					\	'menu':all_values[i],
+					\	'kind':'f'}]
+		endif
+	endfor
+	return final_list
+endfunction
+" }}}
+
+function! phpcomplete#CompleteVariable(base) " {{{
+	let res = []
+
+	" Internal solution for current file.
+	let file = getline(1, '$')
+	let jfile = join(file, ' ')
+	let int_vals = split(jfile, '\ze\$')
+	let int_vars = {}
+	for i in int_vals
+		if i =~ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*=\s*new'
+			let val = matchstr(i,
+						\ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
+		else
+			let val = matchstr(i,
+						\ '^\$[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
+		endif
+		if val != ''
+			let int_vars[val] = ''
+		endif
+	endfor
+
+	call extend(int_vars, g:php_builtin_vars)
+
+	" ctags has support for PHP, use tags file for external variables
+	let ext_vars = {}
+	let tags = taglist('^'.substitute(a:base, '^\$', '', ''))
+	for tag in tags
+		if tag.kind ==? 'v'
+			let item = tag.name
+			let m_menu = ''
+			if tag.cmd =~ tag['name'].'\s*=\s*new\s\+'
+				let m_menu = matchstr(tag.cmd,
+							\ '=\s*new\s\+\zs[a-zA-Z_0-9\x7f-\xff]\+\ze')
+			endif
+			let ext_vars['$'.item] = m_menu
+		endif
+	endfor
+
+	call extend(int_vars, ext_vars)
+
+	for m in sort(keys(int_vars))
+		if m =~ '^\'.a:base
+			call add(res, m)
+		endif
+	endfor
+
+	let int_list = res
+
+	let int_dict = []
+	for i in int_list
+		if int_vars[i] != ''
+			let class = ' '
+			if int_vars[i] != ''
+				let class = i.' class '
+			endif
+			let int_dict += [{'word':i, 'info':class.int_vars[i], 'menu':int_vars[i], 'kind':'v'}]
+		else
+			let int_dict += [{'word':i, 'kind':'v'}]
+		endif
+	endfor
+
+	return int_dict
+endfunction
+" }}}
+
+function! phpcomplete#CompleteClassName(base) " {{{
+	let res = []
+	" Complete class name
+	" Internal solution for finding classes in current file.
+	let file = getline(1, '$')
+	call filter(file,
+			\ 'v:val =~? "class\\s\\+[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*"')
+
+	let fnames = join(map(tagfiles(), 'escape(v:val, " \\#%")'))
+	let jfile = join(file, ' ')
+	let int_values = split(jfile, 'class\s\+')
+	let int_classes = {}
+	for i in int_values
+		let c_name = matchstr(i, '^[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
+		if c_name != ''
+			let int_classes[c_name] = ''
+		endif
+	endfor
+
+	" Prepare list of classes from tags file
+	let ext_classes = {}
+	let tags = taglist('^'.a:base)
+	for tag in tags
+		if tag.kind ==? 'c'
+			let ext_classes[tag.name] = ''
+		endif
+	endfor
+
+	let classes = sort(keys(int_classes))
+	let classes += sort(keys(ext_classes))
+	let classes += keys(g:php_builtin_classes)
+
+	for m in classes
+		if m =~ '^'.a:base
+			call add(res, m)
+		endif
+	endfor
+
+	let final_menu = []
+	for i in res
+		let menu = ''
+		if (has_key(g:php_builtin_classes, i) && has_key(g:php_builtin_classes[i].methods, '__construct'))
+			let menu = g:php_builtin_classes[i]['methods']['__construct']['signature']
+		endif
+		let final_menu += [{'word':i, 'kind':'c', 'menu':menu}]
+	endfor
+
+	return final_menu
+endfunction
+" }}}
+
+function! phpcomplete#CompleteUserClass(scontext, base, sccontent, classAccess) " {{{
+	let final_list = []
+	let res  = []
+	let res2 = []
+
+	" limit based on context to static or normal methods
+	if a:scontext =~ '::'
+		if g:phpcomplete_relax_static_constraint == 1
+			let functions = filter(deepcopy(a:sccontent),
+						\ 'v:val =~ "^\\s*\\(static\\s\\+\\(' . a:classAccess . '\\)*\\|\\(' . a:classAccess . '\\s\\+\\)*static\\)\\s\\+function"')
+			let functions += filter(deepcopy(a:sccontent),
+						\ 'v:val =~ "^\\s*\\(' . a:classAccess . '\\s\\+\\)*function"')
+		else
+			let functions = filter(deepcopy(a:sccontent),
+						\ 'v:val =~ "^\\s*\\(static\\s\\+\\(' . a:classAccess . '\\)*\\|\\(' . a:classAccess . '\\s\\+\\)*static\\)\\s\\+function"')
+		endif
+	elseif a:scontext =~ '->'
+		let functions = filter(deepcopy(a:sccontent),
+					\ 'v:val =~ "^\\s*\\(' . a:classAccess . '\\s\\+\\)*function"')
+	endif
+
+	let sfuncs = split(join(functions, ' '), 'function\s\+')
+	let c_functions = {}
+	for i in sfuncs
+		let f_name = matchstr(i,
+					\ '^&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
+		let f_args = matchstr(i,
+					\ '^&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|$\)')
+		if f_name != ''
+			let c_functions[f_name.'('] = f_args
+		endif
+	endfor
+
+	" limit based on context to static or normal attributes
+	if a:scontext =~ '::'
+		let variables = filter(deepcopy(a:sccontent),
+					\ 'v:val =~ "^\\s*\\(static\\|static\\s\\+\\(' . a:classAccess . '\\|var\\)\\|\\(' . a:classAccess . '\\|var\\)\\s\\+static\\)\\s\\+\\$"')
+	elseif a:scontext =~ '->'
+		let variables = filter(deepcopy(a:sccontent),
+					\ 'v:val =~ "^\\s*\\(' . a:classAccess . '\\|var\\)\\s\\+\\$"')
+	endif
+	let jvars = join(variables, ' ')
+	let svars = split(jvars, '\$')
+	let c_variables = {}
+	for i in svars
+		let c_var = matchstr(i,
+					\ '^\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
+		if c_var != ''
+			let c_variables[c_var] = ''
+		endif
+	endfor
+
+	let constants = filter(deepcopy(a:sccontent),
+				\ 'v:val =~ "^\\s*const\\s\\+"')
+
+	let jcons = join(constants, ' ')
+	let scons = split(jcons, 'const')
+
+	let c_constants = {}
+	for i in scons
+		let c_con = matchstr(i,
+					\ '^\s*\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
+		if c_con != ''
+			let c_constants[c_con] = ''
+		endif
+	endfor
+
+	let all_values = {}
+	call extend(all_values, c_functions)
+	call extend(all_values, c_variables)
+	call extend(all_values, c_constants)
+
+	for m in sort(keys(all_values))
+		if m =~ '^'.a:base && m !~ '::'
+			call add(res, m)
+		elseif m =~ '::'.a:base
+			call add(res2, m)
+		endif
+	endfor
+
+	let start_list = res + res2
+
+	let final_list = []
+	for i in start_list
+		if has_key(c_variables, i)
+			let class = ' '
+			if all_values[i] != ''
+				let class = i.' class '
+			endif
+			let final_list +=
+						\ [{'word': a:scontext =~ '::' ? '$'.i : i,
+						\	'info':class.all_values[i],
+						\	'menu':class.all_values[i],
+						\	'kind':'v'}]
+		elseif has_key(c_constants, i)
+			let final_list +=
+						\ [{'word':i,
+						\	'info':i.all_values[i],
+						\	'menu':all_values[i],
+						\	'kind':'d'}]
+		else
+			let final_list +=
+						\ [{'word':substitute(i, '.*::', '', ''),
+						\	'info':i.all_values[i].')',
+						\	'menu':all_values[i].')',
+						\	'kind':'f'}]
+		endif
+	endfor
+
+	return final_list
+endfunction
+" }}}
+
+function! phpcomplete#CompleteBuiltInClass(scontext, classname, base) " {{{
+	let class_info = g:php_builtin_classes[a:classname]
+	let res = []
+	let search = matchstr(a:base, '\(->\|::\)\zs.*$\ze')
+	if a:scontext =~ '->$' " complete for everything instance related
+		" methods
+		for [method_name, method_info] in items(class_info.methods)
+			if a:base == '' || method_name =~? '^'.a:base
+				call add(res, {'word':method_name.'(', 'kind': 'f', 'menu': method_info.signature, 'info': method_info.signature })
+			endif
+		endfor
+		" properties
+		for [property_name, property_info] in items(class_info.properties)
+			if a:base == '' || property_name =~? '^'.a:base
+				call add(res, {'word':property_name, 'kind': 'v', 'menu': property_info.type, 'info': property_info.type })
+			endif
+		endfor
+	elseif a:scontext =~ '::$' " complete for everything static
+		" methods
+		for [method_name, method_info] in items(class_info.static_methods)
+			if a:base == '' || method_name =~? '^'.a:base
+				call add(res, {'word':method_name.'(', 'kind': 'f', 'menu': method_info.signature, 'info': method_info.signature })
+			endif
+		endfor
+		" properties
+		for [property_name, property_info] in items(class_info.static_properties)
+			if a:base == '' || property_name =~? '^'.a:base
+				call add(res, {'word':property_name, 'kind': 'v', 'menu': property_info.type, 'info': property_info.type })
+			endif
+		endfor
+		" constants
+		for [constant_name, constant_info] in items(class_info.constants)
+			if a:base == '' || constant_name =~? '^'.a:base
+				call add(res, {'word':constant_name, 'kind': 'd', 'menu': constant_info, 'info': constant_info})
+			endif
+		endfor
+	endif
+	return res
+endfunction
+" }}}
 
 function! phpcomplete#GetClassName(scontext) " {{{
 	" Get class name
@@ -838,10 +832,10 @@ let g:php_builtin_classnames = {}
 for [classname, class_info] in items(g:php_builtin_classes)
 	let g:php_builtin_classnames[classname] = ''
 	for [method_name, method_info] in items(class_info.methods)
-		let g:php_builtin_object_functions[classname.'::'.method_name] = method_info.signature
+		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
 	endfor
 	for [method_name, method_info] in items(class_info.static_methods)
-		let g:php_builtin_object_functions[classname.'::'.method_name] = method_info.signature
+		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
 	endfor
 endfor
 
@@ -858,6 +852,31 @@ let php_control = {
 			\ 'require_once(': 'string filename | resource',
 			\ }
 call extend(g:php_builtin_functions, php_control)
+
+
+" Built-in variables " {{{
+let g:php_builtin_vars ={
+			\ '$GLOBALS':'',
+			\ '$_SERVER':'',
+			\ '$_GET':'',
+			\ '$_POST':'',
+			\ '$_COOKIE':'',
+			\ '$_FILES':'',
+			\ '$_ENV':'',
+			\ '$_REQUEST':'',
+			\ '$_SESSION':'',
+			\ '$HTTP_SERVER_VARS':'',
+			\ '$HTTP_ENV_VARS':'',
+			\ '$HTTP_COOKIE_VARS':'',
+			\ '$HTTP_GET_VARS':'',
+			\ '$HTTP_POST_VARS':'',
+			\ '$HTTP_POST_FILES':'',
+			\ '$HTTP_SESSION_VARS':'',
+			\ '$php_errormsg':'',
+			\ '$this':'',
+			\ }
+" }}}
+
 endfunction
 " }}}
 " vim: foldmethod=marker:noexpandtab:ts=4:sts=4:tw=4
