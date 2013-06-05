@@ -16,6 +16,13 @@
 "			The completion list generated this way is only filtered by the completion base
 "			and generally not much more accurate then simple keyword completion.
 "
+"		let g:phpcomplete_min_num_of_chars_for_namespace_completion = n [default 1]
+"			This option controls the number of characters the user needs to type before
+"			the tags will be searched for namespaces and classes in typed out namespaces in
+"			"use ..." context. Setting this to 0 is not recommended because that means the code
+"			have to scan every tag, and vim's taglist() function runs extremly slow with a
+"			"match everything" pattern.
+"
 "	TODO:
 "	- Switching to HTML (XML?) completion (SQL) inside of phpStrings
 "	- allow also for XML completion <- better do html_flavor for HTML
@@ -33,7 +40,11 @@ if !exists('g:phpcomplete_complete_for_unknown_classes')
 	let g:phpcomplete_complete_for_unknown_classes = 1
 endif
 
-function! phpcomplete#CompletePHP(findstart, base)
+if !exists('g:phpcomplete_min_num_of_chars_for_namespace_completion')
+	let g:phpcomplete_min_num_of_chars_for_namespace_completion = 1
+endif
+
+function! phpcomplete#CompletePHP(findstart, base) " {{{
 	if a:findstart
 		unlet! b:php_menu
 		" Check if we are inside of PHP markup
@@ -56,7 +67,7 @@ function! phpcomplete#CompletePHP(findstart, base)
 			let start = col('.') - 1
 			let curline = line('.')
 			let compl_begin = col('.') - 2
-			while start >= 0 && line[start - 1] =~ '[a-zA-Z_0-9\x7f-\xff$]'
+			while start >= 0 && line[start - 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
 				let start -= 1
 			endwhile
 			let b:compl_context = getline('.')[0:compl_begin]
@@ -72,20 +83,22 @@ function! phpcomplete#CompletePHP(findstart, base)
 	if exists("b:php_menu")
 		return b:php_menu
 	endif
-	" Initialize base return lists
-	let res = []
-	let res2 = []
+
+	if !exists('g:php_builtin_functions')
+		call phpcomplete#LoadData()
+	endif
+
 	" a:base is very short - we need context
 	if exists("b:compl_context")
 		let context = b:compl_context
 		unlet! b:compl_context
 	endif
 
-	if !exists('g:php_builtin_functions')
-		call phpcomplete#LoadData()
-	endif
-
 	let scontext = substitute(context, '\$\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*$', '', '')
+
+	if context =~? '^\s*use\s\+'
+		return phpcomplete#CompleteUse(a:base)
+	endif
 
 	if scontext =~ '\(\s*new\|extends\)\s\+$'
 		return phpcomplete#CompleteClassName(a:base)
@@ -124,134 +137,184 @@ function! phpcomplete#CompletePHP(findstart, base)
 	if a:base =~ '^\$'
 		return phpcomplete#CompleteVariable(a:base)
 	else
-		" {{{
-		" Complete everything else -
-		"  + functions,  DONE
-		"  + keywords of language DONE
-		"  + defines (constant definitions), DONE
-		"  + extend keywords for predefined constants, DONE
-		"  + classes (after new), DONE
-		"  + limit choice after -> and :: to funcs and vars DONE
+		return phpcomplete#CompleteGeneral(a:base)
+	endif
+endfunction
+" }}}
 
-		" Internal solution for finding functions in current file.
-		let file = getline(1, '$')
-		call filter(file,
-				\ 'v:val =~ "function\\s\\+&\\?[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*("')
-		let jfile = join(file, ' ')
-		let int_values = split(jfile, 'function\s\+')
-		let int_functions = {}
-		for i in int_values
-			let f_name = matchstr(i,
-					\ '^&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
-			let f_args = matchstr(i,
-					\ '^&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|$\)')
-			let int_functions[f_name.'('] = f_args.')'
-		endfor
+function! phpcomplete#CompleteUse(base) " {{{
+	" completes builtin class names regadless of g:phpcomplete_min_num_of_chars_for_namespace_completion
+	" completes namespaces from tags
+	"   * requires patched ctags
+	" completes classnames from tags within the already typed out namespace using the "namespace" field of tags
+	"   * requires patched ctags
 
+	let res = []
+	if a:base =~? '^\'
+		let leading_slash = '\'
+		let base = substitute(a:base, '^\', '', '')
+	else
+		let leading_slash = ''
+		let base = a:base
+	endif
 
-		" Prepare list of functions from tags file
-		let ext_functions = {}
-		let ext_constants = {}
-		let ext_classes   = {}
-		let tags = taglist('^'.a:base)
+	let namespace_match_pattern  = substitute(base, '\\', '\\\\', 'g')
+	let classname_match_pattern = matchstr(base, '[^\\]\+$')
+	let namespace_for_class = substitute(substitute(namespace_match_pattern, '\\\\', '\\', 'g'), '\\*'.classname_match_pattern.'$', '', '')
+
+	if len(namespace_match_pattern) >= g:phpcomplete_min_num_of_chars_for_namespace_completion
+		if len(classname_match_pattern) >= g:phpcomplete_min_num_of_chars_for_namespace_completion
+			let tags = taglist('^\('.namespace_match_pattern.'\|'.classname_match_pattern.'\)')
+		else
+			let tags = taglist('^'.namespace_match_pattern)
+		endif
+
 		for tag in tags
-			if tag.kind ==? 'f'
-				let item = tag.name
+			if tag.kind ==? 'n' && tag.name =~? '^'.namespace_match_pattern
+				call add(res, {'word': leading_slash.tag.name, 'kind': 'n', 'menu': tag.filename, 'info': tag.filename })
+			elseif has_key(tag, 'namespace') && tag.kind ==? 'c' && tag.namespace ==? namespace_for_class
+				call add(res, {'word': leading_slash.namespace_for_class.'\'.tag.name, 'kind': 'c', 'menu': tag.filename, 'info': tag.filename })
+			endif
+		endfor
+	endif
+
+	let builtin_classnames = filter(keys(copy(g:php_builtin_classnames)), 'v:val =~? "^'.classname_match_pattern.'"')
+	for classname in builtin_classnames
+		call add(res, {'word': '\'.classname, 'kind': 'c'})
+	endfor
+
+	return res
+endfunction
+" }}}
+
+function! phpcomplete#CompleteGeneral(base) " {{{
+	let res = []
+	" Complete everything else -
+	"  + functions,  DONE
+	"  + keywords of language DONE
+	"  + defines (constant definitions), DONE
+	"  + extend keywords for predefined constants, DONE
+	"  + classes (after new), DONE
+	"  + limit choice after -> and :: to funcs and vars DONE
+
+	" Internal solution for finding functions in current file.
+	let file = getline(1, '$')
+	call filter(file,
+				\ 'v:val =~ "function\\s\\+&\\?[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*("')
+	let jfile = join(file, ' ')
+	let int_values = split(jfile, 'function\s\+')
+	let int_functions = {}
+	for i in int_values
+		let f_name = matchstr(i,
+					\ '^&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
+		let f_args = matchstr(i,
+					\ '^&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|$\)')
+		let int_functions[f_name.'('] = f_args.')'
+	endfor
+
+
+	" Prepare list of functions from tags file
+	let ext_functions = {}
+	let ext_constants = {}
+	let ext_classes   = {}
+	let tags = taglist('^'.a:base)
+	for tag in tags
+		if tag.kind ==? 'f'
+			let item = tag.name
+			if has_key(tag, 'signature')
+				let prototype = tag.signature[1:-2]
+			else
 				let prototype = matchstr(tag.cmd,
-						\ 'function\s\+&\?[^[:space:]]\+\s*(\s*\zs.\{-}\ze\s*)\s*{\?')
-				let ext_functions[item.'('] = prototype.') - '.tag['filename']
-			elseif tag.kind ==? 'd'
-				let ext_constants[tag.name] = ''
-			elseif tag.kind ==? 'c'
-				let ext_classes[tag.name] = ''
+							\ 'function\s\+&\?[^[:space:]]\+\s*(\s*\zs.\{-}\ze\s*)\s*{\?')
 			endif
-		endfor
+			let ext_functions[item.'('] = prototype.') - '.tag['filename']
+		elseif tag.kind ==? 'd'
+			let ext_constants[tag.name] = ''
+		elseif tag.kind ==? 'c'
+			let ext_classes[tag.name] = ''
+		endif
+	endfor
 
-		" All functions
-		call extend(int_functions, ext_functions)
-		call extend(int_functions, g:php_builtin_functions)
+	" All functions
+	call extend(int_functions, ext_functions)
+	call extend(int_functions, g:php_builtin_functions)
 
-		" Internal solution for finding constants in current file
-		let file = getline(1, '$')
-		call filter(file, 'v:val =~ "define\\s*("')
-		let jfile = join(file, ' ')
-		let int_values = split(jfile, 'define\s*(\s*')
-		let int_constants = {}
-		for i in int_values
-			let c_name = matchstr(i, '\(["'']\)\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze\1')
-			" let c_value = matchstr(i,
-			" \ '\(["'']\)[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\1\s*,\s*\zs.\{-}\ze\s*)')
-			if c_name != ''
-				let int_constants[c_name] = '' " c_value
-			endif
-		endfor
+	" Internal solution for finding constants in current file
+	let file = getline(1, '$')
+	call filter(file, 'v:val =~ "define\\s*("')
+	let jfile = join(file, ' ')
+	let int_values = split(jfile, 'define\s*(\s*')
+	let int_constants = {}
+	for i in int_values
+		let c_name = matchstr(i, '\(["'']\)\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze\1')
+		if c_name != ''
+			let int_constants[c_name] = '' " c_value
+		endif
+	endfor
 
-		" Prepare list of constants from built-in constants
-		let builtin_constants = {}
-		for [constant, info] in items(g:php_constants)
-			if constant =~# '^'.a:base
-				let builtin_constants[constant] = info
-			endif
-		endfor
+	" Prepare list of constants from built-in constants
+	let builtin_constants = {}
+	for [constant, info] in items(g:php_constants)
+		if constant =~# '^'.a:base
+			let builtin_constants[constant] = info
+		endif
+	endfor
 
-		" Treat keywords as constants
-		for [constant, info] in items(g:php_keywords)
-			if constant =~? '^'.a:base
-				let ext_constants[constant] = info
-			endif
-		endfor
+	" Treat keywords as constants
+	for [constant, info] in items(g:php_keywords)
+		if constant =~? '^'.a:base
+			let ext_constants[constant] = info
+		endif
+	endfor
 
-		" All constants
-		call extend(int_constants, ext_constants)
+	" All constants
+	call extend(int_constants, ext_constants)
 
-		let all_values = {}
+	let all_values = {}
 
-		" One big dictionary of functions
-		call extend(all_values, int_functions)
+	" One big dictionary of functions
+	call extend(all_values, int_functions)
 
-		" Add constants from the current file
-		call extend(all_values, int_constants)
+	" Add constants from the current file
+	call extend(all_values, int_constants)
 
-		" Add built-in constants
-		call extend(all_values, builtin_constants)
+	" Add built-in constants
+	call extend(all_values, builtin_constants)
 
-		" Add external classes
-		call extend(all_values, ext_classes)
+	" Add external classes
+	call extend(all_values, ext_classes)
 
-		"add built-in classes
-		call extend(all_values, g:php_builtin_classnames)
+	"add built-in classes
+	call extend(all_values, g:php_builtin_classnames)
 
-		for m in sort(keys(all_values))
-			if m =~ '^'.a:base
-				call add(res, m)
-			endif
-		endfor
+	for m in sort(keys(all_values))
+		if m =~ '^'.a:base
+			call add(res, m)
+		endif
+	endfor
 
-		let int_list = res
+	let int_list = res
 
-		let final_list = []
-		for i in int_list
-			if has_key(int_functions, i)
-				let final_list +=
+	let final_list = []
+	for i in int_list
+		if has_key(int_functions, i)
+			let final_list +=
 						\ [{'word':i,
 						\	'info':i.int_functions[i],
 						\	'menu':int_functions[i],
 						\	'kind':'f'}]
-			elseif has_key(ext_classes, i)
-				let final_list += [{'word':i, 'kind':'c'}]
-			elseif has_key(int_constants, i) || has_key(builtin_constants, i)
-				let final_list += [{'word':i, 'kind':'d'}]
-			else
-				let final_list += [{'word':i}]
-			endif
-		endfor
+		elseif has_key(ext_classes, i) || has_key(g:php_builtin_classnames, i)
+			let final_list += [{'word':i, 'kind':'c'}]
+		elseif has_key(int_constants, i) || has_key(builtin_constants, i)
+			let final_list += [{'word':i, 'kind': 'd'}]
+		else
+			let final_list += [{'word':i}]
+		endif
+	endfor
 
-		return final_list
-
-		" }}}
-	endif
-
+	return final_list
 endfunction
+" }}}
 
 function! phpcomplete#CompleteUnknownClass(base, scontext) " {{{
 	let res = []
@@ -308,8 +371,12 @@ function! phpcomplete#CompleteUnknownClass(base, scontext) " {{{
 	for tag in tags
 		if tag.kind ==? 'f'
 			let item = tag.name
-			let prototype = matchstr(tag.cmd,
-					\ 'function\s\+&\?[^[:space:]]\+\s*(\s*\zs.\{-}\ze\s*)\s*{\?')
+			if has_key(tag, 'signature')
+				let prototype = tag.signature[1:-2]
+			else
+				let prototype = matchstr(tag.cmd,
+						\ 'function\s\+&\?[^[:space:]]\+\s*(\s*\zs.\{-}\ze\s*)\s*{\?')
+			endif
 			let ext_functions[item.'('] = prototype.') - '.tag['filename']
 		endif
 	endfor

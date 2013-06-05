@@ -1,9 +1,13 @@
-fun! TestCase_returns_class_properties_from_current_file()
+fun! SetUp()
     let g:phpcomplete_complete_for_unknown_classes = 1
     " disable built-in functions
     let g:php_builtin_object_functions = {}
     " disable tags
     exe ':set tags='
+endf
+
+fun! TestCase_returns_class_properties_from_current_file()
+    call SetUp()
 
     " load fixture with variables in it
     let path =  expand('%:p:h')."/".'fixtures/CompleteUnknownClass/foo_properties.class.php'
@@ -20,11 +24,7 @@ fun! TestCase_returns_class_properties_from_current_file()
 endf
 
 fun! TestCase_returns_functions_from_current_file()
-    let g:phpcomplete_complete_for_unknown_classes = 1
-    " disable built-in functions
-    let g:php_builtin_object_functions = {}
-    " disable tags
-    exe ':set tags='
+    call SetUp()
 
     " load fixture with methods and functions in it
     let path =  expand('%:p:h')."/".'fixtures/CompleteUnknownClass/foo_methods.class.php'
@@ -46,10 +46,30 @@ fun! TestCase_returns_functions_from_current_file()
     bw! %
 endf
 
+fun! TestCase_completes_function_signature_from_tags_if_field_available()
+    call SetUp()
+
+    " disable tags
+    exe 'set tags='.expand('%:p:h')."/".'fixtures/CompleteUnknownClass/patched_tags'
+
+    " load an empty fixture so no local functions / variables show up
+    let path =  expand('%:p:h')."/".'fixtures/CompleteUnknownClass/empty.php'
+    below 1new
+    exe ":edit ".path
+
+    let res = phpcomplete#CompleteUnknownClass("method_with_", "$a->")
+
+    " TODO: At this moment, the code finds functions that are not in a class
+    " (so they are no methods)
+    " TODO: At this moment, the code doesn't take filter for staticness
+    call VUAssertEquals([
+                \ {'word': 'method_with_arguments(', 'info': "method_with_arguments($bar = 42, $foo = '') - fixtures/CompleteUnknownClass/irrelevant.class.php", 'menu': "$bar = 42, $foo = '') - fixtures/CompleteUnknownClass/irrelevant.class.php", 'kind': 'f'}],
+                \ res)
+    bw! %
+endf
+
 fun! TestCase_returns_functions_from_tags()
-    let g:phpcomplete_complete_for_unknown_classes = 1
-    " disable built-in functions
-    let g:php_builtin_object_functions = {}
+    call SetUp()
 
     " disable tags
     exe 'set tags='.expand('%:p:h')."/".'fixtures/CompleteUnknownClass/tags'
@@ -74,9 +94,7 @@ fun! TestCase_returns_functions_from_tags()
 endf
 
 fun! TestCase_returns_built_in_object_functions()
-    let g:phpcomplete_complete_for_unknown_classes = 1
-    " disable tags
-    exe ':set tags='
+    call SetUp()
 
     " load an empty fixture so no local functions / variables show up
     let path =  expand('%:p:h')."/".'fixtures/CompleteUnknownClass/empty.php'
@@ -102,6 +120,8 @@ fun! TestCase_returns_built_in_object_functions()
 endf
 
 fun! TestCase_returns_empty_list_when_unknown_class_completion_disabled()
+    call SetUp()
+
     let g:phpcomplete_complete_for_unknown_classes = 0
     let res = phpcomplete#CompleteUnknownClass("setDat", "$d->")
     call VUAssertEquals([], res)
