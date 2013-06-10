@@ -104,13 +104,14 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 	endif
 
 	let scontext = substitute(context, '\$\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*$', '', '')
+	let current_namespace = phpcomplete#GetCurrentNameSpace(getline(0, line('.')))
 
 	if context =~? '^\s*use\s\+'
 		return phpcomplete#CompleteUse(a:base)
 	endif
 
-	if scontext =~ '\(\s*new\|extends\)\s\+$'
-		return phpcomplete#CompleteClassName(a:base)
+	if scontext =~? '\(\s*new\|extends\)\s\+'
+		return phpcomplete#CompleteClassName(a:base, current_namespace)
 	elseif scontext =~ '\(->\|::\)$'
 		" {{{
 		" Get name of the class
@@ -118,7 +119,8 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 
 		" Get location of class definition, we have to iterate through all
 		if classname != ''
-			let classlocation = phpcomplete#GetClassLocation(classname)
+			let [classname, namespace] = phpcomplete#ExpandClassName(classname, current_namespace)
+			let classlocation = phpcomplete#GetClassLocation(classname, namespace)
 		else
 			let classlocation = ''
 		endif
@@ -489,54 +491,73 @@ function! phpcomplete#CompleteVariable(base) " {{{
 endfunction
 " }}}
 
-function! phpcomplete#CompleteClassName(base) " {{{
-	let res = []
+function! phpcomplete#CompleteClassName(base, current_namespace) " {{{
 	" Complete class name
+	let res = []
+	if a:base =~? '^\'
+		let leading_slash = '\'
+		let base = substitute(a:base, '^\', '', '')
+	else
+		let leading_slash = ''
+		let base = a:base
+	endif
+
 	" Internal solution for finding classes in current file.
 	let file = getline(1, '$')
 	call filter(file,
 			\ 'v:val =~? "class\\s\\+[a-zA-Z_\\x7f-\\xff][a-zA-Z_0-9\\x7f-\\xff]*\\s*"')
 
-	let fnames = join(map(tagfiles(), 'escape(v:val, " \\#%")'))
 	let jfile = join(file, ' ')
-	let int_values = split(jfile, 'class\s\+')
+	let int_values = split(jfile, 'class\_s\+')
 	let int_classes = {}
 	for i in int_values
 		let c_name = matchstr(i, '^[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*')
-		if c_name != ''
-			let int_classes[c_name] = ''
+		if c_name != '' && c_name =~? '^'.base
+			call add(res, {'word': c_name, 'kind': 'c'})
 		endif
 	endfor
 
-	" Prepare list of classes from tags file
-	let ext_classes = {}
-	let tags = taglist('^'.a:base)
-	for tag in tags
-		if tag.kind ==? 'c'
-			let ext_classes[tag.name] = ''
-		endif
-	endfor
+	let namespace_match_pattern = substitute((a:current_namespace != '\' && leading_slash != '\' ? a:current_namespace.'\' : '').base, '\\', '\\\\', 'g')
+	let classname_match_pattern = matchstr((a:current_namespace != '\' && leading_slash != '\' ? a:current_namespace.'\' : '').base, '[^\\]\+$')
+	let namespace_for_class = substitute(substitute(namespace_match_pattern, '\\\\', '\\', 'g'), '\\*'.classname_match_pattern.'$', '', '')
 
-	let classes = sort(keys(int_classes))
-	let classes += sort(keys(ext_classes))
-	let classes += keys(g:php_builtin_classes)
+	let tags = []
+	if len(classname_match_pattern) >= g:phpcomplete_min_num_of_chars_for_namespace_completion
+		let tags = taglist('^'.classname_match_pattern)
+	endif
 
-	for m in classes
-		if m =~ '^'.a:base
-			call add(res, m)
-		endif
-	endfor
+	if len(tags)
+		for tag in tags
+			if !has_key(tag, 'namespace') && tag.kind ==? 'c' && tag.name =~? '^'.base
+				call add(res, {'word': leading_slash.tag.name, 'kind': 'c', 'menu': tag.filename, 'info': tag.filename })
+			endif
+			if has_key(tag, 'namespace') && tag.kind ==? 'c' && tag.namespace ==? namespace_for_class
+				let namespace_prefix = leading_slash.namespace_for_class
+				let namespace_prefix = substitute(namespace_prefix, '^'.substitute(leading_slash, '\\', '\\\\', '').a:current_namespace.'\\\?', '', '')
+				call add(res, {'word': namespace_prefix.(len(namespace_prefix) > 0 ? '\' : '').tag.name, 'kind': 'c', 'menu': tag.filename, 'info': tag.filename })
+			endif
+		endfor
+	endif
 
-	let final_menu = []
-	for i in res
-		let menu = ''
-		if (has_key(g:php_builtin_classes, i) && has_key(g:php_builtin_classes[i].methods, '__construct'))
-			let menu = g:php_builtin_classes[i]['methods']['__construct']['signature']
-		endif
-		let final_menu += [{'word':i, 'kind':'c', 'menu':menu}]
-	endfor
+	let base_parts = split(base, '\')
+	if a:current_namespace == '\' || (leading_slash == '\' && len(base_parts) < 2)
+		let builtin_classnames = filter(keys(copy(g:php_builtin_classes)), 'v:val =~? "^'.substitute(a:base, '\\', '', 'g').'"')
+		for classname in builtin_classnames
+			let menu = ''
+			if has_key(g:php_builtin_classes[classname].methods, '__construct')
+				let menu = g:php_builtin_classes[classname]['methods']['__construct']['signature']
+			endif
+			call add(res, {'word': leading_slash.classname, 'kind': 'c', 'menu': menu})
+		endfor
+	endif
 
-	return final_menu
+	let res = sort(res, 'phpcomplete#CompareCompletionRow')
+	return res
+endfunction
+" }}}
+
+function! phpcomplete#CompareCompletionRow(i1, i2) " {{{
+	return a:i1.word == a:i2.word ? 0 : a:i1.word > a:i2.word ? 1 : -1
 endfunction
 " }}}
 
@@ -726,7 +747,7 @@ function! phpcomplete#GetClassName(scontext) " {{{
 	" line above
 	" or line in tags file
 
-	let class_name_pattern = '[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*'
+	let class_name_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
 
 	if a:scontext =~? '\$this->' || a:scontext =~? '\(self\|static\)::'
 		let i = 1
@@ -834,9 +855,9 @@ function! phpcomplete#GetClassName(scontext) " {{{
 endfunction
 " }}}
 
-function! phpcomplete#GetClassLocation(classname) " {{{
+function! phpcomplete#GetClassLocation(classname, namespace) " {{{
 	" Check classname may be name of built in object
-	if has_key(g:php_builtin_classes, a:classname)
+	if has_key(g:php_builtin_classes, a:classname) && (a:namespace == '' || a:namespace == '\')
 		return 'VIMPHP_BUILTINOBJECT'
 	endif
 
@@ -851,18 +872,30 @@ function! phpcomplete#GetClassLocation(classname) " {{{
 			continue
 		endif
 	endwhile
-	" Get class location
+
+	" Get class location from tags
+	let no_namespace_candidate = ''
 	let tags = taglist('^'.a:classname.'$')
 	for tag in tags
 		if tag.kind ==? 'c'
-			return tag.filename
+			if !has_key(tag, 'namespace')
+				let no_namespace_candidate = tag.filename
+			else
+				if a:namespace ==? tag.namespace
+					return tag.filename
+				endif
+			endif
 		endif
 	endfor
+	if no_namespace_candidate != ''
+		return no_namespace_candidate
+	endif
 
 endfunction
 " }}}
 
 function! phpcomplete#GetClassContents(file, name) " {{{
+	let class_name_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
 	let cfile = join(a:file, "\n")
 	" We use new buffer and (later) normal! because
 	" this is the most efficient way. The other way
@@ -879,8 +912,8 @@ function! phpcomplete#GetClassContents(file, name) " {{{
 	let cfline = line('.')
 	let content = join(getline(cfline, endline),"\n")
 	" Catch extends
-	if content =~ 'extends'
-		let extends_class = matchstr(content, 'class\_s\+'.a:name.'\_s\+extends\_s\+\zs[a-zA-Z_0-9\x7f-\xff]\+\ze')
+	if content =~? 'extends'
+		let extends_class = matchstr(content, 'class\_s\+'.a:name.'\_s\+extends\_s\+\zs'.class_name_pattern.'\ze')
 	else
 		let extends_class = ''
 	endif
@@ -888,14 +921,15 @@ function! phpcomplete#GetClassContents(file, name) " {{{
 	normal! %
 
 	let classcontent = join(getline(cfline, line('.')), "\n")
-
+	let current_namespace = phpcomplete#GetCurrentNameSpace(a:file[0:cfline])
 	bw! %
 
 	" go back to original window
 	exe phpcomplete_original_window.'wincmd w'
 
 	if extends_class != ''
-		let classlocation = phpcomplete#GetClassLocation(extends_class)
+		let [extends_class, namespace] = phpcomplete#ExpandClassName(extends_class, current_namespace)
+		let classlocation = phpcomplete#GetClassLocation(extends_class, namespace)
 		if filereadable(classlocation)
 			let classfile = readfile(classlocation)
 			let classcontent .= "\n".phpcomplete#GetClassContents(classfile, extends_class)
@@ -1051,6 +1085,42 @@ function! phpcomplete#FormatDocBlock(info) " {{{
 
 	return res
 endfunction!
+" }}}
+
+function! phpcomplete#GetCurrentNameSpace(file_lines) " {{{
+	let namespace_name_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
+	let file_lines = reverse(a:file_lines)
+	let i = 0
+	while i < len(file_lines)
+		let line = file_lines[i]
+		if line =~? '^\s*namespace\s*'.namespace_name_pattern
+			return matchstr(line, '^\s*namespace\s*\zs'.namespace_name_pattern.'\ze')
+		endif
+		let i += 1
+	endwhile
+	return '\'
+endfunction
+" }}}
+
+function! phpcomplete#ExpandClassName(classname, current_namespace) " {{{
+	let namespace = ''
+	let classname = a:classname
+	" if the classname have namespaces in in or we are in a namespace
+	if a:classname =~ '\\' || a:current_namespace != '\'
+		" add current namespace to the a:classname
+		if a:classname !~ '^\'
+			let classname = a:current_namespace.'\'.substitute(a:classname, '^\\', '', '')
+		else
+			" remove leading \, tag files doesn't have those
+			let classname = substitute(a:classname, '^\\', '', '')
+		endif
+		" split classname to classname and namespace
+		let classname_parts = split(classname, '\\\+')
+		let namespace = join(classname_parts[0:-2], '\')
+		let classname = classname_parts[-1]
+	endif
+	return [classname, namespace]
+endfunction
 " }}}
 
 function! phpcomplete#LoadData() " {{{
