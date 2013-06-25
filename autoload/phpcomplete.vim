@@ -113,11 +113,18 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 	if scontext =~ '\(->\|::\)$'
 		" {{{
 		" Get name of the class
-		let classname = phpcomplete#GetClassName(scontext, imports)
+		let classname = phpcomplete#GetClassName(scontext, current_namespace, imports)
 
 		" Get location of class definition, we have to iterate through all
 		if classname != ''
-			let [classname, namespace] = phpcomplete#ExpandClassName(classname, current_namespace, imports)
+			if classname =~ '\'
+				" split the last \ segment as a classname, everything else is the namespace
+				let classname_parts = split(classname, '\')
+				let namespace = join(classname_parts[0:-2], '\')
+				let classname = classname_parts[-1]
+			else
+				let = namespace = '\'
+			endif
 			let classlocation = phpcomplete#GetClassLocation(classname, namespace)
 		else
 			let classlocation = ''
@@ -899,7 +906,7 @@ function! phpcomplete#CompleteBuiltInClass(scontext, classname, base) " {{{
 endfunction
 " }}}
 
-function! phpcomplete#GetClassName(scontext, imports) " {{{
+function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 	" Get class name
 	" Class name can be detected in few ways:
 	" @var $myVar class
@@ -911,6 +918,8 @@ function! phpcomplete#GetClassName(scontext, imports) " {{{
 	let function_name_pattern = '[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*'
 
 	let classname_candidate = ''
+	let class_candidate_namespace = a:current_namespace
+	let class_candidate_imports = a:imports
 
 	if a:scontext =~? '\$this->' || a:scontext =~? '\(self\|static\)::'
 		let i = 1
@@ -924,23 +933,25 @@ function! phpcomplete#GetClassName(scontext, imports) " {{{
 			endif
 
 			if line =~? '^\s*abstract\s*class'
-				let classname = matchstr(line, '^\s*abstract\s*class\s*\zs'.class_name_pattern.'\ze')
-				return classname
+				let classname_candidate = matchstr(line, '^\s*abstract\s*class\s*\zs'.class_name_pattern.'\ze')
 			elseif line =~? '^\s*class'
-				let classname = matchstr(line, '^\s*class\s*\zs'.class_name_pattern.'\ze')
-				return classname
+				let classname_candidate = matchstr(line, '^\s*class\s*\zs'.class_name_pattern.'\ze')
 			else
 				let i += 1
 				continue
 			endif
+
+			if classname_candidate != ''
+				let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
+				" return absolute classname, without leading \
+				return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
+			endif
 		endwhile
 	elseif a:scontext =~? '(\s*new\s\+'.class_name_pattern.'\s*)->'
 		let classname_candidate = matchstr(a:scontext, '\cnew\s\+\zs'.class_name_pattern.'\ze')
-		if has_key(a:imports, classname_candidate) && a:imports[classname_candidate].kind == 'c'
-			return a:imports[classname_candidate].name
-		else
-			return classname_candidate
-		endif
+		let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
+		" return absolute classname, without leading \
+		return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 	else
 		" check Constant lookup
 		let constant_object = matchstr(a:scontext, '\zs'.class_name_pattern.'\ze::')
@@ -990,7 +1001,25 @@ function! phpcomplete#GetClassName(scontext, imports) " {{{
 				if has_key(g:php_builtin_classes, classname) && has_key(g:php_builtin_classes[classname].static_methods, methodname)
 					return g:php_builtin_classes[classname].static_methods[methodname].return_type
 				else
-					" TODO: try getting the static class's docblock for return type
+					" try to get the class name from the static method's docblock
+					let [classname, namespace_for_class] = phpcomplete#ExpandClassName(classname, a:current_namespace, a:imports)
+					let classlocation = phpcomplete#GetClassLocation(classname, namespace_for_class)
+					if filereadable(classlocation)
+						let file_contents = readfile(classlocation)
+						" types in the docblock should be resolved as according to the namespace and import inside it's class's file
+						let [class_namespace, class_imports] = phpcomplete#GetCurrentNameSpace(file_contents)
+						let doc_str = phpcomplete#GetDocBlock(file_contents, 'function\s\+'.methodname)
+						if doc_str != ''
+							let docblock = phpcomplete#ParseDocBlock(doc_str)
+							if has_key(docblock.return, 'type')
+								" the class name in the comment can contain namespaces, so we have to resolve that string too
+								let [classname, namespace_for_class] = phpcomplete#ExpandClassName(docblock.return.type, class_namespace, class_imports)
+								let classname_candidate = classname
+								let class_candidate_namespace = class_namespace
+								let class_candidate_imports = class_imports
+							endif
+						endif
+					endif
 					break
 				endif
 			endif
@@ -1012,14 +1041,31 @@ function! phpcomplete#GetClassName(scontext, imports) " {{{
 				endif
 			endif
 
+			" if we see a function declaration, try loading the docblock for it and look for matching @params
+			if line =~? 'function\(\s\+'.function_name_pattern.'\)\?\s*(.\{-}\$'.object
+				let match_line = substitute(line, '\\', '\\\\', 'g')
+				let sccontent = getline(0, line('.') - i)
+				let doc_str = phpcomplete#GetDocBlock(sccontent, match_line)
+				if doc_str != ''
+					let docblock = phpcomplete#ParseDocBlock(doc_str)
+					for param in docblock.params
+						if param.name =~? '\$\?'.object
+							let classname_candidate = param.type
+							break
+						endif
+					endfor
+					if classname_candidate != ''
+						break
+					endif
+				endif
+			endif
+
 			let i += 1
 		endwhile
 		if classname_candidate != ''
-			if has_key(a:imports, classname_candidate) && a:imports[classname_candidate].kind == 'c'
-				return a:imports[classname_candidate].name
-			else
-				return classname_candidate
-			endif
+			let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
+			" return absolute classname, without leading \
+			return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 		endif
 
 		" OK, first way failed, now check tags file(s)
@@ -1090,8 +1136,8 @@ function! phpcomplete#GetClassContents(file, name) " {{{
 	" remember the window we started at
 	let phpcomplete_original_window = winnr()
 
-	below 1new
-	0put =cfile
+	silent! below 1new
+	silent! 0put =cfile
 	call search('class\s\+'.a:name.'\(\>\|$\)')
 	let cfline = line('.')
 	call search('{')
@@ -1108,7 +1154,7 @@ function! phpcomplete#GetClassContents(file, name) " {{{
 
 	let classcontent = join(getline(cfline, line('.')), "\n")
 	let [current_namespace, imports] = phpcomplete#GetCurrentNameSpace(a:file[0:cfline])
-	bw! %
+	silent! bw! %
 
 	" go back to original window
 	exe phpcomplete_original_window.'wincmd w'
@@ -1275,7 +1321,7 @@ endfunction!
 
 function! phpcomplete#GetCurrentNameSpace(file_lines) " {{{
 	let namespace_name_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
-	let file_lines = reverse(a:file_lines)
+	let file_lines = reverse(copy(a:file_lines))
 	let i = 0
 	let file_length = len(file_lines)
 	let imports = {}
@@ -1379,7 +1425,7 @@ function! phpcomplete#ExpandClassName(classname, current_namespace, imports) " {
 	" if there's an imported class, just use that class's information
 	if has_key(a:imports, a:classname) && a:imports[a:classname].kind == 'c'
 		let namespace = has_key(a:imports[a:classname], 'namespace') ? a:imports[a:classname].namespace : ''
-		return [a:classname, namespace]
+		return [a:imports[a:classname].name, namespace]
 	endif
 
 	" try to find relative namespace in imports, imported names takes precedence over
