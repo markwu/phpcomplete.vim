@@ -79,9 +79,8 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 			while start >= 0 && line[start - 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
 				let start -= 1
 			endwhile
-			let b:compl_context = getline('.')[0:compl_begin]
+			let b:compl_context = phpcomplete#GetCurrentInstruction(phpbegin)
 			return start
-
 			" We can be also inside of phpString with HTML tags. Deal with
 			" it later (time, not lines).
 		endif
@@ -103,7 +102,7 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 		unlet! b:compl_context
 	endif
 
-	let scontext = substitute(context, '\$\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*$', '', '')
+	let scontext = phpcomplete#GetSubContext(context)
 	let [current_namespace, imports] = phpcomplete#GetCurrentNameSpace(getline(0, line('.')))
 
 	if context =~? '^\s*use\s\+'
@@ -123,7 +122,7 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 				let namespace = join(classname_parts[0:-2], '\')
 				let classname = classname_parts[-1]
 			else
-				let = namespace = '\'
+				let namespace = '\'
 			endif
 			let classlocation = phpcomplete#GetClassLocation(classname, namespace)
 		else
@@ -906,6 +905,70 @@ function! phpcomplete#CompleteBuiltInClass(scontext, classname, base) " {{{
 endfunction
 " }}}
 
+function! phpcomplete#GetCurrentInstruction(phpbegin) " {{{
+	" locate the current instruction (up until the previous non comment or string ";" or php region start (<?php or <?) without newlines
+	let line = getline('.')
+	let col_number = col('.') - 1
+	let line_number = line('.')
+	let instruction = ''
+
+	let phpbegin_length = len(matchstr(getline(a:phpbegin[0]), '\zs<?\(php\)\?\ze'))
+	let phpbegin_end = [a:phpbegin[0], a:phpbegin[1] - 1 + phpbegin_length]
+
+	while !(line_number == 1 && col_number == 1)
+		let current_char = line[col_number]
+		let synIDName = synIDattr(synID(line_number, col_number + 1, 0), 'name')
+
+		" skip comments
+		if synIDName =~? 'comment'
+			let current_char = ''
+		endif
+		" break if we are reached the previous statemenet
+		if current_char == ';' && synIDName !~? 'comment\|string'
+			break
+		endif
+		" break if we are reached the php block start (<?php or <?)
+		if [line_number, col_number] == phpbegin_end
+			break
+		endif
+
+		let instruction = current_char.instruction
+
+		" step a char or a line back if we are on the first column of the line already
+		let col_number -= 1
+		if col_number == -1
+			let line_number -= 1
+			let line = getline(line_number)
+			let col_number = strlen(line)
+		endif
+	endwhile
+	return instruction
+endfunction " }}}
+
+function! phpcomplete#GetSubContext(context) " {{{
+	" chop down the last part of the context, this is basically the completion base
+	let scontext = substitute(a:context, '\$\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*$', '', '')
+
+	" normalize context for the first variable
+	let i = len(scontext) + 1
+	let re = ''
+	while i > 0
+		let i -= 1
+		let char = scontext[i]
+		" ignore whitespace
+		if char =~ '\s'
+			continue
+		endif
+		" chars that should stop the variable search
+		if char == '=' || char == ','
+			break
+		endif
+
+		let re = char.re
+	endwhile
+	return re
+endfunction " }}}
+
 function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 	" Get class name
 	" Class name can be detected in few ways:
@@ -960,7 +1023,7 @@ function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 		endif
 
 		"extract the variable name from the context
-		let object = matchstr(a:scontext, '\zs'.class_name_pattern.'\ze\(::\|->\)')
+		let object = matchstr(a:scontext, '\s*\zs'.class_name_pattern.'\ze\s*\(::\|->\)')
 
 		" scan the file backwards from the current line
 		let i = 1
@@ -1062,6 +1125,7 @@ function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 
 			let i += 1
 		endwhile
+
 		if classname_candidate != ''
 			let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
 			" return absolute classname, without leading \
