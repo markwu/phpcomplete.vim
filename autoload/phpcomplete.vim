@@ -1025,15 +1025,17 @@ function! phpcomplete#GetCallChainReturnType(classname_candidate, class_candidat
 			" Get Structured information of all classes and subclasses including namespace and includes
 			" try to find the method's return type in docblock comment
 			for classstructure in classcontents
-				let doc_str = phpcomplete#GetDocBlock(split(classstructure.content, '\n'), 'function\s\+' . method)
+				let doclock_target_pattern = 'function\s\+'.method.'\|\(public\|private\|protected\|var\).\+\$'.method
+				let doc_str = phpcomplete#GetDocBlock(split(classstructure.content, '\n'), doclock_target_pattern)
 				if (doc_str!='')
 					break
 				endif
 			endfor
 			if doc_str != ''
 				let docblock = phpcomplete#ParseDocBlock(doc_str)
-				if has_key(docblock.return, 'type')
-					let returnclass = matchstr(docblock.return.type, '\zs[A-Za-z0-9]\+\ze$')
+				if has_key(docblock.return, 'type') || has_key(docblock.var, 'type')
+					let type = has_key(docblock.return, 'type') ? docblock.return.type : docblock.var.type
+					let returnclass = matchstr(type, '\zs[A-Za-z0-9]\+\ze$')
 					if has_key(classstructure.imports, returnclass)
 						if has_key(classstructure.imports[returnclass], 'namespace')
 							let fullnamespace = classstructure.imports[returnclass].namespace
@@ -1066,12 +1068,12 @@ function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 	let classname_candidate = ''
 	let class_candidate_namespace = a:current_namespace
 	let class_candidate_imports = a:imports
+	let methodstack = split(a:scontext, '\s*->\s*')
 
 	if a:scontext =~? '\$this->' || a:scontext =~? '\(self\|static\)::'
 		let i = 1
 		while i < line('.')
 			let line = getline(line('.')-i)
-			let methodstack = split(a:scontext, '->')
 
 			" Don't complete self:: or $this if outside of a class
 			" (assumes correct indenting)
@@ -1096,7 +1098,7 @@ function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 		endwhile
 	elseif a:scontext =~? '(\s*new\s\+'.class_name_pattern.'\s*)->'
 		let classname_candidate = matchstr(a:scontext, '\cnew\s\+\zs'.class_name_pattern.'\ze')
-		let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
+		let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
 		" return absolute classname, without leading \
 		return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 	else
@@ -1122,7 +1124,7 @@ function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 		endwhile
 
 		if classname_candidate != ''
-			let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
+			let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
 			" return absolute classname, without leading \
 			return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 		endif
@@ -1223,7 +1225,7 @@ function! phpcomplete#GetClassName(scontext, current_namespace, imports) " {{{
 		endwhile
 
 		if classname_candidate != ''
-			let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, class_candidate_imports)
+			let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
 			" return absolute classname, without leading \
 			return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 		endif
@@ -1709,7 +1711,7 @@ function! phpcomplete#ExpandClassName(classname, current_namespace, imports) " {
 	let namespace = ''
 	let classname = a:classname
 	" if the classname have namespaces in in or we are in a namespace
-	if a:classname =~ '\\' || a:current_namespace != '\'
+	if a:classname =~ '\\' || (a:current_namespace != '\' && a:current_namespace != '')
 		" add current namespace to the a:classname
 		if a:classname !~ '^\'
 			let classname = a:current_namespace.'\'.substitute(a:classname, '^\\', '', '')
