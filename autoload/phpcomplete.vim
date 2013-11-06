@@ -167,9 +167,9 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 				let classcontent = ''
 				let classcontent .= "\n".phpcomplete#GetClassContents(classlocation, classname)
 				let sccontent = split(classcontent, "\n")
-				let classAccess = expand('%:p') == fnamemodify(classlocation, ':p') ? '\\(public\\|private\\|protected\\)' : 'public'
+				let visibility = expand('%:p') == fnamemodify(classlocation, ':p') ? 'private' : 'public'
 
-				return phpcomplete#CompleteUserClass(scontext, a:base, sccontent, classAccess)
+				return phpcomplete#CompleteUserClass(scontext, a:base, sccontent, visibility)
 			endif
 		endif
 
@@ -755,24 +755,62 @@ function! phpcomplete#CompareCompletionRow(i1, i2) " {{{
 endfunction
 " }}}
 
-function! phpcomplete#CompleteUserClass(scontext, base, sccontent, classAccess) " {{{
+function! phpcomplete#EvaluateModifiers(modifiers, required_modifiers, prohibited_modifiers) " {{{
+	" if theres no modifier, and no modifier is allowed and no modifier is required
+	if len(a:modifiers) == 0 && len(a:required_modifiers) == 0
+		return 1
+	else
+		" check if every requred modifier is present
+		for required_modifier in a:required_modifiers
+			if index(a:modifiers, required_modifier) == -1
+				return 0
+			endif
+		endfor
+
+		for modifier in a:modifiers
+			" if the modifier is prohibited its a no match
+			if index(a:prohibited_modifiers, modifier) != -1
+				return 0
+			endif
+		endfor
+
+		" anything that is not explicitly required or prohibited is allowed
+		return 1
+	endif
+endfunction
+" }}}
+
+function! phpcomplete#CompleteUserClass(scontext, base, sccontent, visibility) " {{{
 	let final_list = []
 	let res  = []
+
+	let required_modifiers = []
+	let prohibited_modifiers = []
+
+	if a:visibility == 'public'
+		let prohibited_modifiers += ['private', 'protected']
+	endif
 
 	" limit based on context to static or normal methods
     let static_con = ''
 	if a:scontext =~ '::'
-		if g:phpcomplete_relax_static_constraint == 1
-            let static_con = ''
-        else
-            let static_con = '\\(.*\\<static\\>\\)\\@='
+		if g:phpcomplete_relax_static_constraint != 1
+            let required_modifiers += ['static']
 		endif
 	elseif a:scontext =~ '->'
-        let static_con = '\\(.*\\<static\\>\\)\\@!'
+        let prohibited_modifiers += ['static']
 	endif
 
-    let functions = filter(deepcopy(a:sccontent),
-                \ 'v:val =~ "^\\s*\\(.*\\<' . a:classAccess . '\\>\\)\\@=' . static_con . '\\(public\\|protected\\|private\\|static\\|final\\|abstract\\|\\s\\)\\+function"')
+	let all_function = filter(deepcopy(a:sccontent),
+				\ 'v:val =~ "^\\s*\\(public\\|protected\\|private\\|final\\|abstract\\|static\\|\\s\\)\\+function"')
+
+	let functions = []
+	for i in all_function
+		let modifiers = split(matchstr(tolower(i), '\zs.\+\zefunction'), '\s\+')
+		if phpcomplete#EvaluateModifiers(modifiers, required_modifiers, prohibited_modifiers) == 1
+			call add(functions, i)
+		endif
+	endfor
 
 	let c_functions = {}
 	let c_doc = {}
@@ -791,12 +829,20 @@ function! phpcomplete#CompleteUserClass(scontext, base, sccontent, classAccess) 
 
 	" limit based on context to static or normal attributes
 	if a:scontext =~ '::'
-		let variables = filter(deepcopy(a:sccontent),
-					\ 'v:val =~ "^\\s*\\(static\\|static\\s\\+\\(' . a:classAccess . '\\|var\\)\\|\\(' . a:classAccess . '\\|var\\)\\s\\+static\\)\\s\\+\\$"')
-	elseif a:scontext =~ '->'
-		let variables = filter(deepcopy(a:sccontent),
-					\ 'v:val =~ "^\\s*\\(' . a:classAccess . '\\|var\\)\\s\\+\\$"')
+		" variables must have static to be accessed as static unlike functions
+		let required_modifiers += ['static']
 	endif
+	let all_variable = filter(deepcopy(a:sccontent),
+					\ 'v:val =~ "^\\s*\\(var\\|public\\|protected\\|private\\|final\\|abstract\\|static\\|\\s\\)\\+\\$"')
+
+	let variables = []
+	for i in all_variable
+		let modifiers = split(matchstr(tolower(i), '\zs.\+\ze\$'), '\s\+')
+		if phpcomplete#EvaluateModifiers(modifiers, required_modifiers, prohibited_modifiers) == 1
+			call add(variables, i)
+		endif
+	endfor
+
 	let jvars = join(variables, ' ')
 	let svars = split(jvars, '\$')
 	let c_variables = {}
@@ -1127,15 +1173,16 @@ function! phpcomplete#GetClassName(context, current_namespace, imports) " {{{
 	let class_candidate_namespace = a:current_namespace
 	let class_candidate_imports = a:imports
 	let methodstack = split(a:context, '\s*->\s*')
+	let scontext = phpcomplete#GetSubContext(a:context)
 
 	" add an empty string to the methodstack if the context ends with -> or ::
 	" representing the last segment the user typed so the methodstack has the same
 	" number of elements whenever the user typed some chars for the copletion or not
-	if a:context =~? '\(->\|::\)\s*$'
+	if scontext =~? '\(->\|::\)\s*$'
 		call add(methodstack, '')
 	endif
 
-	if a:context =~? '\$this->' || a:context =~? '\(self\|static\)::'
+	if scontext =~? '\$this->' || scontext =~? '\(self\|static\)::'
 		let i = 1
 		while i < line('.')
 			let line = getline(line('.')-i)
@@ -1161,20 +1208,20 @@ function! phpcomplete#GetClassName(context, current_namespace, imports) " {{{
 				return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 			endif
 		endwhile
-	elseif a:context =~? '(\s*new\s\+'.class_name_pattern.'\s*)->'
-		let classname_candidate = matchstr(a:context, '\cnew\s\+\zs'.class_name_pattern.'\ze')
+	elseif scontext =~? '(\s*new\s\+'.class_name_pattern.'\s*)->'
+		let classname_candidate = matchstr(scontext, '\cnew\s\+\zs'.class_name_pattern.'\ze')
 		let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
 		" return absolute classname, without leading \
 		return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 	else
 		" check Constant lookup
-		let constant_object = matchstr(a:context, '\zs'.class_name_pattern.'\ze::')
+		let constant_object = matchstr(scontext, '\zs'.class_name_pattern.'\ze::')
 		if constant_object != ''
 			let classname_candidate = constant_object
 		endif
 
 		"extract the variable name from the context
-		let object = matchstr(phpcomplete#GetSubContext(a:context), '\s*\zs'.class_name_pattern.'\ze\s*\(::\|->\)')
+		let object = matchstr(scontext, '\s*\zs'.class_name_pattern.'\ze\s*\(::\|->\)')
 
 		" scan the file backwards from current line for explicit type declaration (@var $variable Classname)
 		let i = 1 " start from the current line - 1
