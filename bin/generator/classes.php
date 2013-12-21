@@ -185,6 +185,10 @@ function extract_class_name($xpath) {
     if (stripos(trim($title->textContent), 'interface') === 0) {
         $is_interface = true;
     }
+    $title2 = $xpath->query('//div[@class="reference"]/h1[@class="title"]')->item(0);
+    if (preg_match('/interface$/i', trim($title2->textContent))) {
+        $is_interface = true;
+    }
     return array($classname, $is_interface);
 }
 
@@ -264,7 +268,9 @@ function write_class_signatures_to_vim_hash($signatures, $outdir, $vim_varname) 
 
         fwrite($fd, "call extend($vim_varname, {\n");
         foreach ($classes as $classname => $class_info) {
-            fwrite($fd, "\\'{$classname}': {\n");
+            fwrite($fd, "\\'".strtolower($classname)."': {\n");
+
+            fwrite($fd, "\\   'name': '".vimstring_escape($classname)."',\n");
 
             fwrite($fd, "\\   'constants': {\n");
             foreach ($class_info['constants'] as $constant => $constant_info) {

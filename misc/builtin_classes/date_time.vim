@@ -1,5 +1,6 @@
 call extend(g:php_builtin_classes, {
-\'DateInterval': {
+\'dateinterval': {
+\   'name': 'DateInterval',
 \   'constants': {
 \   },
 \   'properties': {
@@ -22,7 +23,8 @@ call extend(g:php_builtin_classes, {
 \     'createFromDateString': { 'signature': 'string $time | DateInterval', 'return_type': 'DateInterval'},
 \   },
 \},
-\'DatePeriod': {
+\'dateperiod': {
+\   'name': 'DatePeriod',
 \   'constants': {
 \     'EXCLUDE_START_DATE': '1',
 \   },
@@ -36,7 +38,8 @@ call extend(g:php_builtin_classes, {
 \   'static_methods': {
 \   },
 \},
-\'DateTime': {
+\'datetime': {
+\   'name': 'DateTime',
 \   'constants': {
 \     'ATOM': '"Y-m-d\TH:i:sP"',
 \     'COOKIE': '"l, d-M-y H:i:s T"',
@@ -77,7 +80,8 @@ call extend(g:php_builtin_classes, {
 \     '__set_state': { 'signature': 'array $array | DateTime', 'return_type': 'DateTime'},
 \   },
 \},
-\'DateTimeImmutable': {
+\'datetimeimmutable': {
+\   'name': 'DateTimeImmutable',
 \   'constants': {
 \   },
 \   'properties': {
@@ -107,25 +111,8 @@ call extend(g:php_builtin_classes, {
 \     '__set_state': { 'signature': 'array $array | DateTimeImmutable', 'return_type': 'DateTimeImmutable'},
 \   },
 \},
-\'DateTimeInterface': {
-\   'constants': {
-\   },
-\   'properties': {
-\   },
-\   'static_properties': {
-\   },
-\   'methods': {
-\     'diff': { 'signature': 'DateTimeInterface $datetime2 [, bool $absolute = false] | DateInterval', 'return_type': 'DateInterval'},
-\     'format': { 'signature': 'string $format | string', 'return_type': 'string'},
-\     'getOffset': { 'signature': 'void | int', 'return_type': 'int'},
-\     'getTimestamp': { 'signature': 'void | int', 'return_type': 'int'},
-\     'getTimezone': { 'signature': 'void | DateTimeZone', 'return_type': 'DateTimeZone'},
-\     '__wakeup': { 'signature': 'void', 'return_type': ''},
-\   },
-\   'static_methods': {
-\   },
-\},
-\'DateTimeZone': {
+\'datetimezone': {
+\   'name': 'DateTimeZone',
 \   'constants': {
 \     'AFRICA': '1',
 \     'AMERICA': '2',
