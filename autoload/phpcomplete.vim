@@ -168,7 +168,7 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 		let pos = getpos('.')
 		let phpbegin = searchpairpos('<?', '', '?>', 'bWn',
 				\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
-		let phpend   = searchpairpos('<?', '', '?>', 'Wn',
+		let phpend = searchpairpos('<?', '', '?>', 'Wn',
 				\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
 
 		if phpbegin == [0,0] && phpend == [0,0]
@@ -188,7 +188,7 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 				let start -= 1
 			endwhile
 			let b:phpbegin = phpbegin
-			let b:compl_context = phpcomplete#GetCurrentInstruction(line('.'), col('.') - 1, phpbegin)
+			let b:compl_context = phpcomplete#GetCurrentInstruction(line('.'), col('.') - 2, phpbegin)
 
 			" chop of the "base" from the end of the current instruction
 			let b:compl_context = substitute(b:compl_context, '\s*\$\?\([a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\)*$', '', '')
@@ -938,13 +938,13 @@ function! phpcomplete#CompleteUserClass(context, base, sccontent, visibility) " 
 	endif
 
 	" limit based on context to static or normal methods
-    let static_con = ''
+	let static_con = ''
 	if a:context =~ '::$' && a:context !~? 'parent::$'
 		if g:phpcomplete_relax_static_constraint != 1
-            let required_modifiers += ['static']
+			let required_modifiers += ['static']
 		endif
 	elseif a:context =~ '->$'
-        let prohibited_modifiers += ['static']
+		let prohibited_modifiers += ['static']
 	endif
 
 	let all_function = filter(deepcopy(a:sccontent),
@@ -1173,6 +1173,7 @@ function! phpcomplete#GetCurrentInstruction(line_number, col_number, phpbegin) "
 
 	" will hold the first place where a coma could have ended the match
 	let first_coma_break_pos = -1
+	let next_char = len(line) < col_number ? line[col_number + 1] : ''
 
 	while !(line_number == 1 && col_number == 1)
 		if current_char != -1
@@ -1200,6 +1201,11 @@ function! phpcomplete#GetCurrentInstruction(line_number, col_number, phpbegin) "
 
 		" break on the last char of the "and" and "or" operators
 		if synIDName == 'phpOperator' && (current_char == 'r' || current_char == 'd')
+			break
+		endif
+
+		" break on statements as "return" or "throws"
+		if synIDName == 'phpStatement' || synIDName == 'phpException'
 			break
 		endif
 
@@ -1480,6 +1486,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 
 	let class_name_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
 	let function_name_pattern = '[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*'
+	let variable_name_pattern = '\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*'
 
 	let classname_candidate = ''
 	let class_candidate_namespace = a:current_namespace
@@ -1497,7 +1504,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 				return ''
 			endif
 
-			if line =~? '\(abstract\s\+\|final\s\+\)*class'
+			if line =~? '\v^\s*(abstract\s+|final\s+)*\s*class'
 				let class_name = matchstr(line, '\c\s*class\s*\zs'.class_name_pattern.'\ze')
 				let extended_class = matchstr(line, '\cclass\s\+'.class_name_pattern.'\s\+extends\s\+\zs'.class_name_pattern.'\ze')
 
@@ -1528,9 +1535,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 		" extract the variable name from the context
 		let object = methodstack[0]
 		let object_is_array = (object =~ '\v^[^[]+\[' ? 1 : 0)
-		if object_is_array
-			let object = matchstr(object, '\v^[^[]+')
-		endif
+		let object = matchstr(object, variable_name_pattern)
 
 		" scan the file backwards from current line for explicit type declaration (@var $variable Classname)
 		let i = 1 " start from the current line - 1
@@ -1635,7 +1640,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 					endif
 				endif
 			endif
-			if line =~# '^\s*'.object.'\s*=&\?\s*\$[a-zA-Z_0-9\x7f-\xff]'
+			if line =~# '^\s*'.object.'\s*=&\?\s*'.variable_name_pattern
 				let tailing_semicolon = match(line, ';\s*$')
 				let tailing_semicolon = tailing_semicolon != -1 ? tailing_semicolon : strlen(getline(a:start_line - i))
 				let prev_context = phpcomplete#GetCurrentInstruction(a:start_line - i, tailing_semicolon - 1, b:phpbegin)
@@ -1718,7 +1723,7 @@ function! phpcomplete#GetClassLocation(classname, namespace) " {{{
 	let i = 1
 	while i < line('.')
 		let line = getline(line('.')-i)
-		if line =~ '^\s*class ' . a:classname  . '\(\s\+\|$\)' && tolower(current_namespace) == search_namespace
+		if line =~? '^\s*\(abstract\s\+\|final\s\+\)*\s*class\s*'.a:classname.'\(\s\+\|$\)' && tolower(current_namespace) == search_namespace
 			return expand('%:p')
 		else
 			let i += 1
