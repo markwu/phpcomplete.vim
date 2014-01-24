@@ -9,12 +9,18 @@
 "			Enables completion for non-static methods when completing for static context (::).
 "			This generates E_STRICT level warning, but php calls these methods nontheless.
 "
-"		let g:phpcomplete_complete_for_unknown_classes = 1/0 [default 1]
+"		let g:phpcomplete_complete_for_unknown_classes = 1/0 [default 0]
 "			Enables completion of variables and functions in "everything under the sun" fashion
 "			when completing for an instance or static class context but the code can't tell the class
 "			or locate the file that it lives in.
 "			The completion list generated this way is only filtered by the completion base
 "			and generally not much more accurate then simple keyword completion.
+"
+"		let	g:phpcomplete_search_tags_for_variables = 1/0 [default 0]
+"			Enables use of tags when the plugin tries to find variables.
+"			When enabled the plugin will search for the variables in the tag files with kind 'v',
+"			lines like $some_var = new Foo; but these usually yield highly inaccurate results and
+"			can	be fairly slow.
 "
 "		let g:phpcomplete_min_num_of_chars_for_namespace_completion = n [default 1]
 "			This option controls the number of characters the user needs to type before
@@ -79,7 +85,11 @@ if !exists('g:phpcomplete_relax_static_constraint')
 endif
 
 if !exists('g:phpcomplete_complete_for_unknown_classes')
-	let g:phpcomplete_complete_for_unknown_classes = 1
+	let g:phpcomplete_complete_for_unknown_classes = 0
+endif
+
+if !exists('g:phpcomplete_search_tags_for_variables')
+	let g:phpcomplete_search_tags_for_variables = 0
 endif
 
 if !exists('g:phpcomplete_min_num_of_chars_for_namespace_completion')
@@ -305,13 +315,28 @@ function! phpcomplete#CompleteUse(base) " {{{
 			let tags = phpcomplete#GetTaglist('^'.namespace_match_pattern)
 		endif
 
+		let patched_ctags_detected = 0
+		let namespaced_matches = []
+		let no_namespace_matches = []
 		for tag in tags
+			if has_key(tag, 'namespace')
+				let patched_ctags_detected = 1
+			endif
 			if tag.kind ==? 'n' && tag.name =~? '^'.namespace_match_pattern
-				call add(res, {'word': tag.name, 'kind': 'n', 'menu': tag.filename, 'info': tag.filename })
+				let patched_ctags_detected = 1
+				call add(namespaced_matches, {'word': tag.name, 'kind': 'n', 'menu': tag.filename, 'info': tag.filename })
 			elseif has_key(tag, 'namespace') && (tag.kind ==? 'c' || tag.kind ==? 'i') && tag.namespace ==? namespace_for_class
-				call add(res, {'word': namespace_for_class.'\'.tag.name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
+				call add(namespaced_matches, {'word': namespace_for_class.'\'.tag.name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
+			elseif (tag.kind ==? 'c' || tag.kind ==? 'i')
+				call add(no_namespace_matches, {'word': namespace_for_class.'\'.tag.name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
 			endif
 		endfor
+		" if it seems that the tags file have namespace informations we can safely throw
+		" away namespaceless tag matches since we can be sure they are invalid
+		if patched_ctags_detected
+			no_namespace_matches = []
+		endif
+		let res += namespaced_matches + no_namespace_matches
 	endif
 
 	if base !~ '\'
@@ -756,21 +781,22 @@ function! phpcomplete#CompleteVariable(base) " {{{
 	call extend(int_vars, g:php_builtin_vars)
 
 	" ctags has support for PHP, use tags file for external variables
-	let ext_vars = {}
-	let tags = phpcomplete#GetTaglist('\C^'.substitute(a:base, '^\$', '', ''))
-	for tag in tags
-		if tag.kind ==? 'v'
-			let item = tag.name
-			let m_menu = ''
-			if tag.cmd =~? tag['name'].'\s*=\s*new\s\+'
-				let m_menu = matchstr(tag.cmd,
-							\ '\c=\s*new\s\+\zs[a-zA-Z_0-9\x7f-\xff]\+\ze')
+	if  g:phpcomplete_search_tags_for_variables
+		let ext_vars = {}
+		let tags = phpcomplete#GetTaglist('\C^'.substitute(a:base, '^\$', '', ''))
+		for tag in tags
+			if tag.kind ==? 'v'
+				let item = tag.name
+				let m_menu = ''
+				if tag.cmd =~? tag['name'].'\s*=\s*new\s\+'
+					let m_menu = matchstr(tag.cmd,
+								\ '\c=\s*new\s\+\zs[a-zA-Z_0-9\x7f-\xff]\+\ze')
+				endif
+				let ext_vars['$'.item] = m_menu
 			endif
-			let ext_vars['$'.item] = m_menu
-		endif
-	endfor
-
-	call extend(int_vars, ext_vars)
+		endfor
+		call extend(int_vars, ext_vars)
+	endif
 
 	for m in sort(keys(int_vars))
 		if m =~# '^\'.a:base
@@ -840,24 +866,36 @@ function! phpcomplete#CompleteClassName(base, kinds, current_namespace, imports)
 	endif
 
 	if len(tags)
+		let base_parts = split(a:base, '\')
+		if len(base_parts) > 1
+			let namespace_part = join(base_parts[0:-2], '\').'\'
+		else
+			let namespace_part = ''
+		endif
+		let no_namespace_matches = []
+		let namespaced_matches = []
+		let seen_namespaced_tag = 0
 		for tag in tags
-			if !has_key(tag, 'namespace') && index(kinds, tag.kind) != -1 && tag.name =~? '^'.base
-				call add(res, {'word': leading_slash.tag.name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
+			if has_key(tag, 'namespace')
+				let seen_namespaced_tag = 1
+			endif
+			let relative_name = namespace_part.tag.name
+			" match base without the namespace part for namespaced base but not namespaced tags, for tagfiles with old ctags
+			if !has_key(tag, 'namespace') && index(kinds, tag.kind) != -1 && stridx(tag.name, base[len(namespace_part):]) == 0
+				call add(no_namespace_matches, {'word': leading_slash.relative_name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
 			endif
 			if has_key(tag, 'namespace') && index(kinds, tag.kind) != -1 && tag.namespace ==? namespace_for_class
 				let full_name = tag.namespace.'\'.tag.name " absolute namespaced name (without leading '\')
-
-				let base_parts = split(a:base, '\')
-				if len(base_parts) > 1
-					let namespace_part = join(base_parts[0:-2], '\')
-				else
-					let namespace_part = ''
-				endif
-				let relative_name = (namespace_part == '' ? '' : namespace_part.'\').tag.name
-
-				call add(res, {'word': leading_slash == '\' ? leading_slash.full_name : relative_name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
+				call add(namespaced_matches, {'word': leading_slash == '\' ? leading_slash.full_name : relative_name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
 			endif
 		endfor
+		" if there was a tag with namespace field, assume tag files with namespace support, so the matches
+		" without a namespace field are in the global namespace so if there were namespace in the base
+		" we should not add them to the matches
+		if seen_namespaced_tag && namespace_part != ''
+			let no_namespace_matches = []
+		endif
+		let res += no_namespace_matches + namespaced_matches
 	endif
 
 	" look for built in classnames and interfaces
@@ -1691,16 +1729,18 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 		" OK, first way failed, now check tags file(s)
 		" This method is useless when local variables are not indexed by ctags and
 		" pretty inaccurate even if it is
-		let tags = phpcomplete#GetTaglist('^'.substitute(object, '^\$', '', ''))
-		if len(tags) == 0
-			return
-		else
-			for tag in tags
-				if tag.kind ==? 'v' && tag.cmd =~? '=\s*new\s\+\zs'.class_name_pattern.'\ze'
-					let classname = matchstr(tag.cmd, '=\s*new\s\+\zs'.class_name_pattern.'\ze')
-					return classname
-				endif
-			endfor
+		if g:phpcomplete_search_tags_for_variables
+			let tags = phpcomplete#GetTaglist('^'.substitute(object, '^\$', '', ''))
+			if len(tags) == 0
+				return
+			else
+				for tag in tags
+					if tag.kind ==? 'v' && tag.cmd =~? '=\s*new\s\+\zs'.class_name_pattern.'\ze'
+						let classname = matchstr(tag.cmd, '=\s*new\s\+\zs'.class_name_pattern.'\ze')
+						return classname
+					endif
+				endfor
+			endif
 		endif
 	endif
 endfunction
@@ -2139,6 +2179,7 @@ function! phpcomplete#GetCurrentNameSpace(file_lines) " {{{
 			for [key, import] in items(imports)
 				" if theres a \ in the name we have it's definetly not a built in thing, look for tags
 				if import.name =~ '\\'
+					let patched_ctags_detected = 0
 					let [classname, namespace_for_classes] = phpcomplete#ExpandClassName(import.name, '\', {})
 					let namespace_name_candidate = substitute(import.name, '\\', '\\\\', 'g')
 					" can be a namespace name as is, or can be a tagname at the end with a namespace
@@ -2149,15 +2190,31 @@ function! phpcomplete#GetCurrentNameSpace(file_lines) " {{{
 							if tag.kind == 'n' && tag.name == import.name
 								call extend(import, tag)
 								let import['builtin'] = 0
+								let patched_ctags_detected = 1
 								break
 							endif
 							" if the name matches with the extracted classname and namespace
-							if (tag.kind == 'c' || tag.kind == 'i') && tag.name == classname && has_key(tag, 'namespace') && tag.namespace == namespace_for_classes
-								call extend(import, tag)
-								let import['builtin'] = 0
-								break
+							if (tag.kind == 'c' || tag.kind == 'i') && tag.name == classname
+								if has_key(tag, 'namespace')
+									let patched_ctags_detected = 1
+									if tag.namespace == namespace_for_classes
+										call extend(import, tag)
+										let import['builtin'] = 0
+										break
+									endif
+								elseif !exists('no_namespace_candidate')
+									" save the first namespacless match to be used if no better
+									" candidate found later on
+									let no_namespace_candidate = tag
+								endif
 							endif
 						endfor
+						" there were a namespacless class name match, if we think that the
+						" tags are not generated with patched ctags we will take it as a match
+						if exists('no_namespace_candidate') && !patched_ctags_detected
+							call extend(import, no_namespace_candidate)
+							let import['builtin'] = 0
+						endif
 					else
 						" if no tags are found, extract the namespace from the name
 						let ns = matchstr(import.name, '\c\zs[a-zA-Z0-9\\]\+\ze\\' . name)
@@ -2243,26 +2300,36 @@ endfunction
 " }}}
 
 function! phpcomplete#LoadData() " {{{
-
 " Keywords/reserved words, all other special things
 " Later it is possible to add some help to values, or type of defined variable
 runtime! misc/php_keywords.vim
 
+" One giant hash of all built-in function, class, interface and constant grouped by extension
+runtime! misc/builtin.vim
+
 " Built in functions
 let g:php_builtin_functions = {}
-call phpcomplete#LoadDataFiles('builtin_functions', g:phpcomplete_active_function_extensions)
+for ext in g:phpcomplete_active_function_extensions
+	call extend(g:php_builtin_functions, g:phpcomplete_builtin['functions'][ext])
+endfor
 
 " Built in classs
 let g:php_builtin_classes = {}
-call phpcomplete#LoadDataFiles('builtin_classes', g:phpcomplete_active_class_extensions)
+for ext in g:phpcomplete_active_class_extensions
+	call extend(g:php_builtin_classes, g:phpcomplete_builtin['classes'][ext])
+endfor
 
 " Built in interfaces
 let g:php_builtin_interfaces = {}
-call phpcomplete#LoadDataFiles('builtin_interfaces', g:phpcomplete_active_interface_extensions)
+for ext in g:phpcomplete_active_interface_extensions
+	call extend(g:php_builtin_interfaces, g:phpcomplete_builtin['interfaces'][ext])
+endfor
 
 " Built in constants
 let g:php_constants = {}
-call phpcomplete#LoadDataFiles('php_constants', g:phpcomplete_active_constant_extensions)
+for ext in g:phpcomplete_active_constant_extensions
+	call extend(g:php_constants, g:phpcomplete_builtin['constants'][ext])
+endfor
 
 " When the classname not found or found but the tags dosen't contain that
 " class we will try to complate any method of any builtin class. To speed up
@@ -2329,18 +2396,6 @@ let g:php_builtin_vars ={
 			\ '$this':'',
 			\ }
 " }}}
-endfunction
-" }}}
-
-function! phpcomplete#LoadDataFiles(dir, enabled_files) " {{{
-	let enabled_files = map(copy(a:enabled_files), 'v:val.".vim"')
-	let files = split(glob(s:script_path.'/../misc/'.a:dir.'/*.vim'), "\n")
-	for file in files
-		let basename = fnamemodify(file, ':t')
-		if index(enabled_files, basename) != -1
-			exec 'source '.file
-		endif
-	endfor
 endfunction
 " }}}
 

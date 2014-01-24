@@ -48,12 +48,18 @@ Check out the **[wiki page about the patched ctags](https://github.com/shawncplu
 Enables completion for non-static methods when completing for static context (`::`).
 This generates `E_STRICT` level warning, but php calls these methods nontheless.
 
-**let g:phpcomplete\_complete\_for\_unknown\_classes = 1/0 [default 1]** <br>
-Enables completion of variables and functions in "everything under the sun" fassion
+**let g:phpcomplete\_complete\_for\_unknown\_classes = 1/0 [default 0]** <br>
+Enables completion of variables and functions in "everything under the sun" fashion
 when completing for an instance or static class context but the code can't tell the class
 or locate the file that it lives in.
 The completion list generated this way is only filtered by the completion base
 and generally not much more accurate then simple keyword completion.
+
+**let g:phpcomplete\_search\_tags\_for\_variables = 1/0 [default 0]** <br>
+Enables use of tags when the plugin tries to find variables.
+When enabled the plugin will search for the variables in the tag files with kind 'v',
+lines like `$some_var = new Foo;` but these usually yield highly inaccurate results and
+can	be fairly slow.
 
 **let g:phpcomplete\_min\_num\_of\_chars\_for\_namespace\_completion = n [default 1]** *Requires [patched ctags](https://github.com/shawncplus/phpcomplete.vim/wiki/Patched-ctags)* <br>
 This option controls the number of characters the user needs to type before
