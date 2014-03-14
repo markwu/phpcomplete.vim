@@ -130,7 +130,7 @@ let g:phpcomplete_active_function_extensions = [
 let g:phpcomplete_active_class_extensions = [
 			\'apc', 'curl', 'date_time', 'directories', 'dom', 'imagemagick', 'libxml', 'memcache', 'memcached', 'mongo', 'mysqli', 'pdo', 'phar',
 			\'predefined_exceptions', 'predefined_interfaces_and_classes', 'reflection', 'sessions', 'simplexml', 'snmp', 'soap', 'solr', 'sphinx',
-			\'spl', 'sqlite3', 'streams', 'tidy', 'varnish', 'xmlreader', 'xsl', 'zip']
+			\'spl', 'sqlite3', 'streams', 'tidy', 'varnish', 'xmlreader', 'xmlwriter', 'xsl', 'zip']
 let g:phpcomplete_active_interface_extensions = [
 			\'json', 'predefined_interfaces_and_classes', 'spl', 'date_time', 'reflection']
 let g:phpcomplete_active_constant_extensions = [
@@ -201,9 +201,6 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 			let b:phpbegin = phpbegin
 			let b:compl_context = phpcomplete#GetCurrentInstruction(line('.'), col('.') - 2, phpbegin)
 
-			" chop of the "base" from the end of the current instruction
-			let b:compl_context = substitute(b:compl_context, '\s*\$\?\([a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\)*$', '', '')
-
 			return start
 			" We can be also inside of phpString with HTML tags. Deal with
 			" it later (time, not lines).
@@ -225,7 +222,11 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 	if exists("b:compl_context")
 		let context = b:compl_context
 		unlet! b:compl_context
-	endif
+		" chop of the "base" from the end of the current instruction
+		if a:base != ""
+			let context = substitute(context, '\s*\$\?\([a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\)*$', '', '')
+		end
+	end
 
 	let [current_namespace, imports] = phpcomplete#GetCurrentNameSpace(getline(0, line('.')))
 
@@ -276,6 +277,9 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 	elseif context =~? 'extends'
 		let kinds = context =~? 'class\s' ? ['c'] : ['i']
 		return phpcomplete#CompleteClassName(a:base, kinds, current_namespace, imports)
+	elseif context =~? 'class [a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
+		" special case when you've typed the class keyword and the name too, only extends and implements allowed there
+		return filter(['extends', 'implements'], 'stridx(v:val, a:base) == 0')
 	elseif context =~? 'new'
 		return phpcomplete#CompleteClassName(a:base, ['c'], current_namespace, imports)
 	endif
@@ -542,7 +546,7 @@ function! phpcomplete#CompleteGeneral(base, current_namespace, imports) " {{{
 		endfor
 		for [interfacename, info] in items(g:php_builtin_interfacenames)
 			if interfacename =~? '^'.base
-				let builtin_interfaces[leading_slash.classname] = info
+				let builtin_interfaces[leading_slash.interfacename] = info
 			endif
 		endfor
 	endif
@@ -2324,6 +2328,9 @@ runtime! misc/php_keywords.vim
 
 " One giant hash of all built-in function, class, interface and constant grouped by extension
 runtime! misc/builtin.vim
+
+" Extra builtin information that is not auto generated, for things that that is not automated
+runtime! misc/builtin_manual.vim
 
 " Built in functions
 let g:php_builtin_functions = {}
