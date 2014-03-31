@@ -274,6 +274,8 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 		" }}}
 	elseif context =~? 'implements'
 		return phpcomplete#CompleteClassName(a:base, ['i'], current_namespace, imports)
+	elseif context =~? 'extends\s\+.\+$'
+		return ['implements']
 	elseif context =~? 'extends'
 		let kinds = context =~? 'class\s' ? ['c'] : ['i']
 		return phpcomplete#CompleteClassName(a:base, kinds, current_namespace, imports)
@@ -921,7 +923,7 @@ function! phpcomplete#CompleteClassName(base, kinds, current_namespace, imports)
 		if index(kinds, 'i') != -1
 			let builtin_interfaces = filter(keys(copy(g:php_builtin_interfaces)), 'v:val =~? "^'.substitute(a:base, '\\', '', 'g').'"')
 			for interfacename in builtin_interfaces
-				call add(res, {'word': leading_slash.interfacename, 'kind': 'i', 'menu': ''})
+				call add(res, {'word': leading_slash.g:php_builtin_interfaces[interfacename]['name'], 'kind': 'i', 'menu': ''})
 			endfor
 		endif
 	endif
@@ -1208,7 +1210,7 @@ function! phpcomplete#GetCurrentInstruction(line_number, col_number, phpbegin) "
 				\ '!', '@', '%', '^', '&',
 				\ '*', '/', '-', '+', '=',
 				\ ':', '>', '<', '.', '?',
-				\ ';', '(',  '|', '['
+				\ ';', '(', '|', '['
 				\ ]
 
 	let phpbegin_length = len(matchstr(getline(a:phpbegin[0]), '\zs<?\(php\)\?\ze'))
@@ -1317,8 +1319,8 @@ function! phpcomplete#GetCurrentInstruction(line_number, col_number, phpbegin) "
 
 	" there were a "naked" coma in the instruction
 	if first_coma_break_pos != -1
-		if instruction !~? '^use' " use ... statements should not be broken up
-			let pos = -1 * first_coma_break_pos + 1
+		if instruction !~? '^use' && instruction !~? '^class' " use ... statements and class delcarations should not be broken up by comas
+			let pos = (-1 * first_coma_break_pos) + 1
 			let instruction = instruction[pos :]
 		endif
 	endif
@@ -1529,6 +1531,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 
 	let class_name_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*'
 	let function_name_pattern = '[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*'
+	let function_invocation_pattern = '[a-zA-Z_\x7f-\xff\\][a-zA-Z_0-9\x7f-\xff\\]*('
 	let variable_name_pattern = '\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*'
 
 	let classname_candidate = ''
@@ -1568,6 +1571,32 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 		let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
 		" return absolute classname, without leading \
 		return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
+	elseif get(methodstack, 0) =~# function_invocation_pattern
+		let function_name = matchstr(methodstack[0], '^\s*\zs'.function_name_pattern)
+		let function_file = phpcomplete#GetFunctionLocation(function_name, a:current_namespace)
+
+		if function_file == 'VIMPHP_BUILTINFUNCTION'
+			" built in function, grab the return type from the info string
+			let return_type = matchstr(g:php_builtin_functions[function_name.'('], '\v\|\s+\zs.+$')
+			let classname_candidate = return_type
+			let class_candidate_namespace = '\'
+		else
+			let file_lines = readfile(function_file)
+			let docblock_str = phpcomplete#GetDocBlock(file_lines, 'function\s*\<'.function_name.'\>')
+			let docblock = phpcomplete#ParseDocBlock(docblock_str)
+			if has_key(docblock.return, 'type')
+				let classname_candidate = docblock.return.type
+				let [class_candidate_namespace, function_imports] = phpcomplete#GetCurrentNameSpace(file_lines)
+				" try to expand the classname of the returned type with the context got from the function's source file
+
+				let [classname_candidate, unused] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, function_imports)
+			endif
+		endif
+		if classname_candidate != ''
+			let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
+			" return absolute classname, without leading \
+			return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
+		endif
 	else
 		" check Constant lookup
 		let constant_object = matchstr(a:context, '\zs'.class_name_pattern.'\ze::')
@@ -1684,7 +1713,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 				endif
 			endif
 
-			" assignment for the variable in question
+			" assignment for the variable in question with a variable on the right hand side
 			if line =~# '^\s*'.object.'\s*=&\?\s*'.variable_name_pattern
 				let tailing_semicolon = match(line, ';\s*$')
 				let tailing_semicolon = tailing_semicolon != -1 ? tailing_semicolon : strlen(getline(a:start_line - i))
@@ -1700,6 +1729,38 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 					let class_candidate_namespace = '\'
 				endif
 				break
+			endif
+
+			" assignment for the variable in question with a function on the right hand side
+			if line =~# '^\s*'.object.'\s*=&\?\s*'.function_invocation_pattern
+				let tailing_semicolon = match(line, ';\s*$')
+				let tailing_semicolon = tailing_semicolon != -1 ? tailing_semicolon : strlen(getline(a:start_line - i))
+				let prev_context = phpcomplete#GetCurrentInstruction(a:start_line - i, tailing_semicolon - 1, b:phpbegin)
+
+				let function_name = matchstr(prev_context, '^'.function_invocation_pattern.'\ze')
+				let function_name = matchstr(function_name, '^\zs.\+\ze\s*($') " strip the trailing (
+				let [function_name, function_namespace] = phpcomplete#ExpandClassName(function_name, a:current_namespace, a:imports)
+
+				let function_file = phpcomplete#GetFunctionLocation(function_name, function_namespace)
+
+				if function_file == 'VIMPHP_BUILTINFUNCTION'
+					" built in function, grab the return type from the info string
+					let return_type = matchstr(g:php_builtin_functions[function_name.'('], '\v\|\s+\zs.+$')
+					let classname_candidate = return_type
+					let class_candidate_namespace = '\'
+					break
+				else
+					let file_lines = readfile(function_file)
+					let docblock_str = phpcomplete#GetDocBlock(file_lines, 'function\s*\<'.function_name.'\>')
+					let docblock = phpcomplete#ParseDocBlock(docblock_str)
+					if has_key(docblock.return, 'type')
+						let classname_candidate = docblock.return.type
+						let [class_candidate_namespace, function_imports] = phpcomplete#GetCurrentNameSpace(file_lines)
+						" try to expand the classname of the returned type with the context got from the function's source file
+						let [classname_candidate, unused] = phpcomplete#ExpandClassName(classname_candidate, class_candidate_namespace, function_imports)
+						break
+					endif
+				endif
 			endif
 
 			" foreach with the variable in question
@@ -1774,7 +1835,7 @@ function! phpcomplete#GetClassLocation(classname, namespace) " {{{
 		return 'VIMPHP_BUILTINOBJECT'
 	endif
 
-	if a:namespace == ''
+	if a:namespace == '' || a:namespace == '\'
 		let search_namespace = '\'
 	else
 		let search_namespace = tolower(a:namespace)
@@ -1810,6 +1871,50 @@ function! phpcomplete#GetClassLocation(classname, namespace) " {{{
 	if no_namespace_candidate != ''
 		return no_namespace_candidate
 	endif
+
+endfunction
+" }}}
+
+function! phpcomplete#GetFunctionLocation(function_name, namespace) " {{{
+	" builtin functions doesn't need explicit \ in front of them even in namespaces,
+	" aliased built-in function names are not handled
+	if has_key(g:php_builtin_functions, a:function_name.'(')
+		return 'VIMPHP_BUILTINFUNCTION'
+	endif
+
+	" do in-file lookup for function definition
+	let i = 1
+	let buffer_lines = getline(1, line('$'))
+	for line in buffer_lines
+		if line =~? '^\s*function\s\+'.a:function_name.'\s*('
+			return expand('%:p')
+		endif
+	endfor
+
+
+	if a:namespace == '' || a:namespace == '\'
+		let search_namespace = '\'
+	else
+		let search_namespace = tolower(a:namespace)
+	endif
+	let no_namespace_candidate = ''
+	let tags = phpcomplete#GetTaglist('\c^'.a:function_name.'$')
+
+	for tag in tags
+		if tag.kind == 'f'
+			if !has_key(tag, 'namespace')
+				let no_namespace_candidate = tag.filename
+			else
+				if search_namespace == tolower(tag.namespace)
+					return tag.filename
+				endif
+			endif
+		endif
+	endfor
+	if no_namespace_candidate != ''
+		return no_namespace_candidate
+	endif
+endif
 
 endfunction
 " }}}
@@ -2367,7 +2472,17 @@ let g:php_builtin_object_functions = {}
 " for performance reasons we precompile this too
 let g:php_builtin_classnames = {}
 
+" In order to reduce file size, empty keys are omitted from class structures.
+" To make the structure of in-memory hashes normalized we will add them in runtime
+let required_class_hash_keys = ['constants', 'properties', 'static_properties', 'methods', 'static_methods']
+
 for [classname, class_info] in items(g:php_builtin_classes)
+	for property_name in required_class_hash_keys
+		if !has_key(class_info, property_name)
+			let class_info[property_name] = {}
+		endif
+	endfor
+
 	let g:php_builtin_classnames[class_info.name] = ''
 	for [method_name, method_info] in items(class_info.methods)
 		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
@@ -2379,6 +2494,12 @@ endfor
 
 let g:php_builtin_interfacenames = {}
 for [interfacename, info] in items(g:php_builtin_interfaces)
+	for property_name in required_class_hash_keys
+		if !has_key(class_info, property_name)
+			let class_info[property_name] = {}
+		endif
+	endfor
+
 	let g:php_builtin_interfacenames[interfacename] = ''
 	for [method_name, method_info] in items(class_info.methods)
 		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
@@ -2424,4 +2545,4 @@ let g:php_builtin_vars ={
 endfunction
 " }}}
 
-" vim: foldmethod=marker:noexpandtab:ts=4:sts=4:tw=4
+" vim: foldmethod=marker:noexpandtab:ts=4:sts=4
