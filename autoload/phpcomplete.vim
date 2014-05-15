@@ -193,13 +193,12 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 			" locate the start of the word
 			let line = getline('.')
 			let start = col('.') - 1
-			let curline = line('.')
 			let compl_begin = col('.') - 2
 			while start >= 0 && line[start - 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
 				let start -= 1
 			endwhile
 			let b:phpbegin = phpbegin
-			let b:compl_context = phpcomplete#GetCurrentInstruction(line('.'), col('.') - 2, phpbegin)
+			let b:compl_context = phpcomplete#GetCurrentInstruction(line('.'), max([0, col('.') - 2]), phpbegin)
 
 			return start
 			" We can be also inside of phpString with HTML tags. Deal with
@@ -946,6 +945,149 @@ function! phpcomplete#CompareCompletionRow(i1, i2) " {{{
 endfunction
 " }}}
 
+function! phpcomplete#JumpToDefinition() " {{{
+	if !exists('g:php_builtin_functions')
+		call phpcomplete#LoadData()
+	endif
+
+	let [symbol, symbol_context, symbol_namespace, current_imports] = phpcomplete#GetCurrentSymbolWithContext()
+	if symbol == ''
+		call feedkeys("\<C-]>", 'n')
+		return
+	endif
+
+	let [symbol_file, symbol_line, symbol_col] = phpcomplete#LocateSymbol(symbol, symbol_context, symbol_namespace, current_imports)
+	if symbol_file == ''
+		call feedkeys("\<C-]>", 'n')
+		return
+	endif
+
+	" location found, open the file and jump to it
+	silent! exec "e ".symbol_file
+	call cursor(symbol_line, symbol_col)
+
+endfunction " }}}
+
+function! phpcomplete#GetCurrentSymbolWithContext() " {{{
+	" Check if we are inside of PHP markup
+	let pos = getpos('.')
+	let phpbegin = searchpairpos('<?', '', '?>', 'bWn',
+			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
+	let phpend = searchpairpos('<?', '', '?>', 'Wn',
+			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
+
+	if (phpbegin == [0, 0] && phpend == [0, 0])
+		return ['', '', '', '']
+	endif
+
+	" locate the start of the word
+	let b:phpbegin = phpbegin
+
+	let line = getline('.')
+	let start = col('.') - 1
+	let end = start
+	if start < 0
+		let start = 0;
+	endif
+	if end < 0
+		let end = 0;
+	endif
+
+	while start >= 0 && line[start - 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
+		let start -= 1
+	endwhile
+	while end + 1 <= len(line) && line[end + 1] =~ '[\\a-zA-Z_0-9\x7f-\xff$]'
+		let end += 1
+	endwhile
+	let word = line[start : end]
+	" trim extra non-word chars from the end line "(" that can come from a
+	" function call
+	let word = substitute(word, '\v\c[^\\a-zA-Z_0-9$]*$', '', '')
+
+	let current_instruction = phpcomplete#GetCurrentInstruction(line('.'), max([0, col('.') - 2]), phpbegin)
+	let context = substitute(current_instruction, '\s*[$a-zA-Z_0-9\x7f-\xff]*$', '', '')
+
+	let [current_namespace, current_imports] = phpcomplete#GetCurrentNameSpace(getline(0, line('.')))
+	let [symbol, symbol_namespace] = phpcomplete#ExpandClassName(word, current_namespace, current_imports)
+
+	return [symbol, context, symbol_namespace, current_imports]
+endfunction " }}}
+
+function! phpcomplete#LocateSymbol(symbol, symbol_context, symbol_namespace, current_imports) " {{{
+	let unknow_location = ['', '', '']
+
+	if a:symbol =~ '\\'
+		let symbol_parts = split(a:symbol, '\')
+		let search_symbol = symbol_parts[-1]
+	else
+		let search_symbol = a:symbol
+	endif
+
+	" are we looking for a method?
+	if a:symbol_context =~ '\(->\|::\)$'
+		" Get name of the class
+		let classname = phpcomplete#GetClassName(line('.'), a:symbol_context, a:symbol_namespace, a:current_imports)
+
+		" Get location of class definition, we have to iterate through all
+		if classname != ''
+			if classname =~ '\'
+				" split the last \ segment as a classname, everything else is the namespace
+				let classname_parts = split(classname, '\')
+				let namespace = join(classname_parts[0:-2], '\')
+				let classname = classname_parts[-1]
+			else
+				let namespace = '\'
+			endif
+			let classlocation = phpcomplete#GetClassLocation(classname, namespace)
+			if filereadable(classlocation)
+				" Method found in classlocation
+				silent! below 1new
+
+				silent! exec "e ".classlocation
+				call search('\cclass\_s\+\<'.classname.'\(\>\|$\)', 'wc')
+				call search('\cfunction\_s\+\zs\<'.search_symbol.'\(\>\|$\)', 'wc')
+
+				let line = line('.')
+				let col  = col('.')
+				silent! exec 'close!'
+				return [classlocation, line, col]
+			endif
+		endif
+	else
+		" it could be a function
+		let function_file = phpcomplete#GetFunctionLocation(a:symbol, a:symbol_namespace)
+		if function_file != '' && filereadable(function_file)
+			" Function found in function_file
+			silent! below 1new
+
+			silent! exec "e ".function_file
+			call search('\cfunction\_s\+\zs\<'.search_symbol.'\(\>\|$\)', 'wc')
+
+			let line = line('.')
+			let col  = col('.')
+			silent! exec 'close!'
+			return [function_file, line, col]
+		endif
+
+		let class_file = phpcomplete#GetClassLocation(a:symbol, a:symbol_namespace)
+		if class_file != '' && filereadable(class_file)
+			" Class or interface found in class_file
+			silent! below 1new
+
+			silent! exec "e ".class_file
+			call search('\c\(interface\|class\)\_s\+\zs\<'.search_symbol.'\(\>\|$\)', 'wc')
+
+			let line = line('.')
+			let col  = col('.')
+			silent! exec 'close!'
+			return [class_file, line, col]
+
+		endif
+	endif
+
+	return unknow_location
+endfunction " }}}
+
 function! phpcomplete#EvaluateModifiers(modifiers, required_modifiers, prohibited_modifiers) " {{{
 	" if theres no modifier, and no modifier is allowed and no modifier is required
 	if len(a:modifiers) == 0 && len(a:required_modifiers) == 0
@@ -1598,32 +1740,35 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 			return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 		endif
 	else
+		" extract the variable name from the context
+		let object = methodstack[0]
+		let object_is_array = (object =~ '\v^[^[]+\[' ? 1 : 0)
+		let object = matchstr(object, variable_name_pattern)
+
 		" check Constant lookup
 		let constant_object = matchstr(a:context, '\zs'.class_name_pattern.'\ze::')
 		if constant_object != ''
 			let classname_candidate = constant_object
 		endif
 
-		" extract the variable name from the context
-		let object = methodstack[0]
-		let object_is_array = (object =~ '\v^[^[]+\[' ? 1 : 0)
-		let object = matchstr(object, variable_name_pattern)
-
-		" scan the file backwards from current line for explicit type declaration (@var $variable Classname)
-		let i = 1 " start from the current line - 1
-		while i < a:start_line
-			let line = getline(a:start_line - i)
-			" in file lookup for /* @var $foo Class */
-			if line =~# '@var\s\+'.object.'\s\+'.class_name_pattern
-				let classname_candidate = matchstr(line, '@var\s\+'.object.'\s\+\zs'.class_name_pattern.'\(\[\]\)\?')
-				break
-			elseif line !~ '^\s*$'
-				" type indicator comments should be next to the variable
-				" non empty lines break the search
-				break
-			endif
-			let i += 1
-		endwhile
+		if classname_candidate == ''
+			" scan the file backwards from current line for explicit type declaration (@var $variable Classname)
+			let i = 1 " start from the current line - 1
+			while i < a:start_line
+				let line = getline(a:start_line - i)
+				" in file lookup for /* @var $foo Class */
+				if line =~# '@var\s\+'.object.'\s\+'.class_name_pattern
+					let classname_candidate = matchstr(line, '@var\s\+'.object.'\s\+\zs'.class_name_pattern.'\(\[\]\)\?')
+					let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, a:current_namespace, a:imports)
+					break
+				elseif line !~ '^\s*$'
+					" type indicator comments should be next to the variable
+					" non empty lines break the search
+					break
+				endif
+				let i += 1
+			endwhile
+		endif
 
 		if classname_candidate != ''
 			let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
@@ -1633,7 +1778,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 
 		" scan the file backwards from the current line
 		let i = 1
-		while i < a:start_line
+		while i < a:start_line " {{{
 			let line = getline(a:start_line - i)
 
 			" do in-file lookup of $var = new Class
@@ -1803,7 +1948,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 			endif
 
 			let i += 1
-		endwhile
+		endwhile " }}}
 
 		if classname_candidate != ''
 			let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
@@ -2357,7 +2502,7 @@ function! phpcomplete#GetCurrentNameSpace(file_lines) " {{{
 					if has_key(g:php_builtin_classnames, tolower(import.name))
 						let import['kind'] = 'c'
 						let import['builtin'] = 1
-					elseif has_key(g:php_builtin_interfaces, import.name)
+					elseif has_key(g:php_builtin_interfacenames, tolower(import.name))
 						let import['kind'] = 'i'
 						let import['builtin'] = 1
 					else
@@ -2484,7 +2629,7 @@ for [classname, class_info] in items(g:php_builtin_classes)
 		endif
 	endfor
 
-	let g:php_builtin_classnames[class_info.name] = ''
+	let g:php_builtin_classnames[classname] = ''
 	for [method_name, method_info] in items(class_info.methods)
 		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
 	endfor
@@ -2503,10 +2648,10 @@ for [interfacename, info] in items(g:php_builtin_interfaces)
 
 	let g:php_builtin_interfacenames[interfacename] = ''
 	for [method_name, method_info] in items(class_info.methods)
-		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
+		let g:php_builtin_object_functions[interfacename.'::'.method_name.'('] = method_info.signature
 	endfor
 	for [method_name, method_info] in items(class_info.static_methods)
-		let g:php_builtin_object_functions[classname.'::'.method_name.'('] = method_info.signature
+		let g:php_builtin_object_functions[interfacename.'::'.method_name.'('] = method_info.signature
 	endfor
 endfor
 
