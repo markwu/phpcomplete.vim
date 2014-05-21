@@ -14,8 +14,17 @@ endf
 fun! TestCase_completes_builtin_classes()
     call SetUp()
     let g:php_builtin_classnames = {
-                \ 'ArrayAccess': '',
-                \ 'ArrayObject': '',
+                \ 'arrayaccess': '',
+                \ 'arrayobject': '',
+                \ }
+
+    let g:php_builtin_classes = {
+                \ 'arrayaccess':{
+                \   'name': 'ArrayAccess',
+                \ },
+                \ 'arrayobject':{
+                \   'name': 'ArrayObject',
+                \ },
                 \ }
 
     " returns every builtin class when nothing typed in
@@ -104,3 +113,5 @@ fun! TestCase_honors_the_min_num_of_chars_for_namespace_completion_setting_for_c
     let res = phpcomplete#CompleteUse('Assetic\Asset\Ba')
     call VUAssertEquals([], res)
 endf
+
+" vim: foldmethod=marker:expandtab:ts=4:sts=4

@@ -136,7 +136,7 @@ fun! TestCase_finds_classes_from_variable_equals_new_class_lines()
     let classname = phpcomplete#GetClassName(8, '$foo2->', '\', {'RenamedFoo': {'name': 'OriginalFoo', 'kind': 'c', 'builtin':0,}})
     call VUAssertEquals('OriginalFoo', classname)
 
-	exe ':12'
+    exe ':12'
     let classname = phpcomplete#GetClassName(12, '$foo3->', 'NS1', {})
     call VUAssertEquals('NS2\Foo', classname)
 
@@ -160,7 +160,7 @@ fun! TestCase_finds_common_singleton_getInstance_calls()
     let classname = phpcomplete#GetClassName(8, '$foo2->', '\', {'RenamedFoo': {'name': 'OriginalFoo', 'kind': 'c', 'builtin':0,}})
     call VUAssertEquals('OriginalFoo', classname)
 
-	exe ':10'
+    exe ':10'
     let classname = phpcomplete#GetClassName(12, '$foo3->', 'NS1', {})
     call VUAssertEquals('NS2\Foo', classname)
 
@@ -657,3 +657,28 @@ fun! TestCase_function_invocation_return_type()
 
     silent! bw! %
 endf
+
+fun! TestCase_resolves_self_this_static_in_return_docblock()
+    let g:php_builtin_classes = {}
+    let g:php_builtin_classnames = {}
+    let path = expand('%:p:h')."/"."fixtures/GetClassName/self_return_type.php"
+    below 1new
+    exe ":silent! edit ".path
+    exe 'let b:phpbegin = [0, 0]'
+
+    exe ':32'
+    let classname = phpcomplete#GetClassName(32, '$b2->return_self()->', '', {})
+    call VUAssertEquals('Baz2', classname)
+
+    exe ':33'
+    let classname = phpcomplete#GetClassName(33, '$b2->return_this()->', '', {})
+    call VUAssertEquals('Baz2', classname)
+
+    exe ':34'
+    let classname = phpcomplete#GetClassName(34, '$b2->return_static()->', '', {})
+    call VUAssertEquals('Baz2', classname)
+
+    silent! bw! %
+endf
+
+" vim: foldmethod=marker:expandtab:ts=4:sts=4

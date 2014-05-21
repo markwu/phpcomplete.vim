@@ -9,7 +9,7 @@ endf
 fun! TestCase_return_VIMPHP_BUILTINOBJECT_when_classname_in_builtin_classes()
     call SetUp()
 
-    let g:php_builtin_classnames = {'DateTime': ''}
+    let g:php_builtin_classnames = {'datetime': ''}
     let g:php_builtin_classes = {
                 \'datetime':{}
                 \}
@@ -67,3 +67,5 @@ fun! TestCase_return_class_location_from_tags()
 
     silent! bw! %
 endf
+
+" vim: foldmethod=marker:expandtab:ts=4:sts=4

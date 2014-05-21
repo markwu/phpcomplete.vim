@@ -348,11 +348,11 @@ function! phpcomplete#CompleteUse(base) " {{{
 	if base !~ '\'
 		let builtin_classnames = filter(keys(copy(g:php_builtin_classnames)), 'v:val =~? "^'.classname_match_pattern.'"')
 		for classname in builtin_classnames
-			call add(res, {'word': classname, 'kind': 'c'})
+			call add(res, {'word': g:php_builtin_classes[tolower(classname)].name, 'kind': 'c'})
 		endfor
 		let builtin_interfacenames = filter(keys(copy(g:php_builtin_interfacenames)), 'v:val =~? "^'.classname_match_pattern.'"')
 		for interfacename in builtin_interfacenames
-			call add(res, {'word': interfacename, 'kind': 'i'})
+			call add(res, {'word': g:php_builtin_interfaces[tolower(interfacename)].name, 'kind': 'i'})
 		endfor
 	endif
 
@@ -542,7 +542,7 @@ function! phpcomplete#CompleteGeneral(base, current_namespace, imports) " {{{
 		" Add builtin class names
 		for [classname, info] in items(g:php_builtin_classnames)
 			if classname =~? '^'.base
-				let builtin_classnames[leading_slash.classname] = info
+				let builtin_classnames[leading_slash.g:php_builtin_classes[tolower(classname)].name] = info
 			endif
 		endfor
 		for [interfacename, info] in items(g:php_builtin_interfacenames)
@@ -915,7 +915,7 @@ function! phpcomplete#CompleteClassName(base, kinds, current_namespace, imports)
 				if has_key(g:php_builtin_classes[tolower(classname)].methods, '__construct')
 					let menu = g:php_builtin_classes[tolower(classname)]['methods']['__construct']['signature']
 				endif
-				call add(res, {'word': leading_slash.classname, 'kind': 'c', 'menu': menu})
+				call add(res, {'word': leading_slash.g:php_builtin_classes[tolower(classname)].name, 'kind': 'c', 'menu': menu})
 			endfor
 		endif
 
@@ -1040,17 +1040,22 @@ function! phpcomplete#LocateSymbol(symbol, symbol_context, symbol_namespace, cur
 			endif
 			let classlocation = phpcomplete#GetClassLocation(classname, namespace)
 			if filereadable(classlocation)
-				" Method found in classlocation
-				silent! below 1new
+				let classcontents = phpcomplete#GetCachedClassContents(classlocation, classname)
+				for classcontent in classcontents
+					if classcontent.content =~? '\cfunction\_s\+\zs\<'.search_symbol.'\(\>\|$\)' && filereadable(classcontent.file)
+						" Method found in classlocation
+						silent! below 1new
 
-				silent! exec "e ".classlocation
-				call search('\cclass\_s\+\<'.classname.'\(\>\|$\)', 'wc')
-				call search('\cfunction\_s\+\zs\<'.search_symbol.'\(\>\|$\)', 'wc')
+						silent! exec "e ".classcontent.file
+						call search('\cclass\_s\+\<'.classcontent.class.'\(\>\|$\)', 'wc')
+						call search('\cfunction\_s\+\zs\<'.search_symbol.'\(\>\|$\)', 'wc')
 
-				let line = line('.')
-				let col  = col('.')
-				silent! exec 'close!'
-				return [classlocation, line, col]
+						let line = line('.')
+						let col  = col('.')
+						silent! exec 'close!'
+						return [classcontent.file, line, col]
+					endif
+				endfor
 			endif
 		endif
 	else
@@ -1583,7 +1588,14 @@ function! phpcomplete#GetCallChainReturnType(classname_candidate, class_candidat
 						else
 							let fullnamespace = class_candidate_namespace
 						endif
-						let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(returnclass, fullnamespace, a:imports)
+						" make @return self, static, $this the same way
+						" (not exactly what php means by these)
+						if returnclass == 'self' || returnclass == 'static' || returnclass == '$this'
+							let classname_candidate = a:classname_candidate
+							let class_candidate_namespace = a:class_candidate_namespace
+						else
+							let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(returnclass, fullnamespace, a:imports)
+						endif
 					endif
 
 					return phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, a:imports, methodstack)
