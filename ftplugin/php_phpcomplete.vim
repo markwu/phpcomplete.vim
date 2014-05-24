@@ -12,22 +12,14 @@
 let s:save_cpo = &cpo
 set cpo&vim
 
-if exists('g:loaded_phpcomplete')
-	finish
-endif
-let g:loaded_phpcomplete = 1
-
-
 let g:phpcomplete_enhance_jump_to_definition = get(g:, 'phpcomplete_enhance_jump_to_definition', 1)
 
-
-augroup phpcomplete
-	au!
-	if g:phpcomplete_enhance_jump_to_definition
-		autocmd FileType php silent! nnoremap <silent> <unique> <C-]> :<C-u>call phpcomplete#JumpToDefinition()<CR>
+if g:phpcomplete_enhance_jump_to_definition
+	if !hasmapto('<Plug>PHPJump')
+		map <silent> <buffer> <unique> <C-]> <Plug>PHPJump
 	endif
-augroup END
-
+	nnoremap <silent> <buffer> <Plug>PHPJump :<C-u>call phpcomplete#JumpToDefinition()<CR>
+endif
 
 let &cpo = s:save_cpo
 unlet s:save_cpo
