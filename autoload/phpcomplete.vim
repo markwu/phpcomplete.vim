@@ -1050,7 +1050,7 @@ function! phpcomplete#LocateSymbol(symbol, symbol_context, symbol_namespace, cur
 				let namespace = '\'
 			endif
 			let classlocation = phpcomplete#GetClassLocation(classname, namespace)
-			if filereadable(classlocation)
+			if classlocation != '' && filereadable(classlocation)
 				let classcontents = phpcomplete#GetCachedClassContents(classlocation, classname)
 				for classcontent in classcontents
 					if classcontent.content =~? 'function\_s\+&\=\<'.search_symbol.'\(\>\|$\)' && filereadable(classcontent.file)
@@ -1189,7 +1189,7 @@ function! phpcomplete#CompleteUserClass(context, base, sccontent, visibility) " 
 					\ 'function\s*&\?\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
 		let f_args = matchstr(i,
 					\ 'function\s*&\?[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\s*(\zs.\{-}\ze)\_s*\({\|\_$\)')
-		if f_name != ''
+		if f_name != '' && stridx(f_name, '__') != 0
 			let c_functions[f_name.'('] = f_args
 			if g:phpcomplete_parse_docblock_comments
 				let c_doc[f_name.'('] = phpcomplete#GetDocBlock(a:sccontent, 'function\s*&\?\<'.f_name.'\>')
@@ -1312,7 +1312,7 @@ function! phpcomplete#CompleteBuiltInClass(context, classname, base) " {{{
 	if a:context =~ '->$' " complete for everything instance related
 		" methods
 		for [method_name, method_info] in items(class_info.methods)
-			if a:base == '' || method_name =~? '^'.a:base
+			if stridx(method_name, '__') != 0 && (a:base == '' || method_name =~? '^'.a:base)
 				call add(res, {'word':method_name.'(', 'kind': 'f', 'menu': method_info.signature, 'info': method_info.signature })
 			endif
 		endfor
@@ -1580,7 +1580,7 @@ function! phpcomplete#GetCallChainReturnType(classname_candidate, class_candidat
 
 			return unknown_result
 
-		elseif filereadable(classlocation)
+		elseif classlocation != '' && filereadable(classlocation)
 			" Read the next method from the stack and extract only the name
 
 			let classcontents = phpcomplete#GetCachedClassContents(classlocation, classname_candidate)
@@ -2063,6 +2063,7 @@ function! phpcomplete#GetClassLocation(classname, namespace) " {{{
 		return no_namespace_candidate
 	endif
 
+	return ''
 endfunction
 " }}}
 
@@ -2198,7 +2199,7 @@ function! phpcomplete#GetClassContentsStructure(file_path, file_lines, class_nam
 
 	silent! below 1new
 	silent! 0put =cfile
-	call search('\(class\|interface\)\s\+'.a:class_name.'\(\>\|$\)')
+	call search('\(class\|interface\)\_s\+'.a:class_name.'\(\>\|$\)')
 	let cfline = line('.')
 	call search('{')
 	let endline = line('.')
@@ -2231,7 +2232,9 @@ function! phpcomplete#GetClassContentsStructure(file_path, file_lines, class_nam
 			let namespace = '\'
 		endif
 		let classlocation = phpcomplete#GetClassLocation(extends_class, namespace)
-		if filereadable(classlocation)
+		if classlocation == "VIMPHP_BUILTINOBJECT"
+			let result += [phpcomplete#GenerateBuiltinClassStub(g:php_builtin_classes[tolower(extends_class)])]
+		elseif classlocation != '' && filereadable(classlocation)
 			let full_file_path = fnamemodify(classlocation, ':p')
 			let result += phpcomplete#GetClassContentsStructure(full_file_path, readfile(full_file_path), extends_class)
 		elseif tolower(current_namespace) == tolower(namespace)
@@ -2253,6 +2256,51 @@ function! phpcomplete#GetClassContents(classlocation, class_name) " {{{
 	return join(result, "\n")
 endfunction
 " }}}
+
+function! phpcomplete#GenerateBuiltinClassStub(class_info) " {{{
+	let re = 'class '.a:class_info['name']." {"
+	for [name, initializer] in items(a:class_info.constants)
+		let re .= "\n\tconst ".name." = ".initializer.";"
+	endfor
+	for [name, info] in items(a:class_info.properties)
+		let re .= "\n\t// @var $".name." ".info.type
+		let re .= "\n\tpublic $".name.";"
+	endfor
+	for [name, info] in items(a:class_info.static_properties)
+		let re .= "\n\t// @var ".name." ".info.type
+		let re .= "\n\tpublic static ".name." = ".info.initializer.";"
+	endfor
+	for [name, info] in items(a:class_info.methods)
+		if name =~ '^__'
+			continue
+		endif
+		let re .= "\n\t/**"
+		let re .= "\n\t * ".name
+		let re .= "\n\t *"
+		let re .= "\n\t * @return ".info.return_type
+		let re .= "\n\t */"
+		let re .= "\n\tpublic function ".name."(".info.signature."){"
+		let re .= "\n\t}"
+	endfor
+	for [name, info] in items(a:class_info.static_methods)
+		let re .= "\n\t/**"
+		let re .= "\n\t * ".name
+		let re .= "\n\t *"
+		let re .= "\n\t * @return ".info.return_type
+		let re .= "\n\t */"
+		let re .= "\n\tpublic static function ".name."(".info.signature."){"
+		let re .= "\n\t}"
+	endfor
+	let re .= "\n}"
+
+	return { 'class': a:class_info['name'],
+				\ 'content': re,
+				\ 'namespace': '',
+				\ 'imports': {},
+				\ 'file': 'VIMPHP_BUILTINOBJECT',
+				\ 'mtime': 0,
+				\ }
+endfunction " }}}
 
 function! phpcomplete#GetDocBlock(sccontent, search) " {{{
 	let i = 0
