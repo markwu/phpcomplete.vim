@@ -116,6 +116,30 @@ fun! TestCase_finds_variables_marked_with_AT_VAR_comments()
     let classname = phpcomplete#GetClassName(13, '$foo_conflicting_sources->', '\', {})
     call VUAssertEquals('Foo', classname, 'when multiple sources available for the class name, explicit marker takes precedence')
 
+    exe ':19'
+    let classname = phpcomplete#GetClassName(19, '$foo2->', '\', {})
+    call VUAssertEquals('Foo2', classname)
+
+    exe ':25'
+    let classname = phpcomplete#GetClassName(25, '$foo3->', '\', {})
+    call VUAssertEquals('Foo3', classname)
+
+    exe ':28'
+    let classname = phpcomplete#GetClassName(28, '$foo2->', '\', {})
+    call VUAssertEquals('Foo2', classname)
+
+    exe ':32'
+    let classname = phpcomplete#GetClassName(32, '$baz->', '\', {})
+    call VUAssertEquals('FooClass2', classname)
+
+    exe ':35'
+    let classname = phpcomplete#GetClassName(35, '$baz2->', '\', {})
+    call VUAssertEquals('FooClass2', classname)
+
+    exe ':38'
+    let classname = phpcomplete#GetClassName(38, '$baz3->', 'Bar', {})
+    call VUAssertEquals('Bar\FooClass2', classname)
+
     silent! bw! %
 endf
 

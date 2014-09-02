@@ -178,9 +178,9 @@ function! phpcomplete#CompletePHP(findstart, base) " {{{
 		" Check if we are inside of PHP markup
 		let pos = getpos('.')
 		let phpbegin = searchpairpos('<?', '', '?>', 'bWn',
-				\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
+				\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
 		let phpend = searchpairpos('<?', '', '?>', 'Wn',
-				\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
+				\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
 
 		if phpbegin == [0,0] && phpend == [0,0]
 			" We are outside of any PHP markup. Complete HTML
@@ -361,7 +361,7 @@ endfunction
 " }}}
 
 function! phpcomplete#CompleteGeneral(base, current_namespace, imports) " {{{
-	" Complete everything else -
+	" Complete everything
 	"  + functions,  DONE
 	"  + keywords of language DONE
 	"  + defines (constant definitions), DONE
@@ -887,7 +887,7 @@ function! phpcomplete#CompleteClassName(base, kinds, current_namespace, imports)
 			endif
 			let relative_name = namespace_part.tag.name
 			" match base without the namespace part for namespaced base but not namespaced tags, for tagfiles with old ctags
-			if !has_key(tag, 'namespace') && index(kinds, tag.kind) != -1 && stridx(tag.name, base[len(namespace_part):]) == 0
+			if !has_key(tag, 'namespace') && index(kinds, tag.kind) != -1 && stridx(tolower(tag.name), tolower(base[len(namespace_part):])) == 0
 				call add(no_namespace_matches, {'word': leading_slash.relative_name, 'kind': tag.kind, 'menu': tag.filename, 'info': tag.filename })
 			endif
 			if has_key(tag, 'namespace') && index(kinds, tag.kind) != -1 && tag.namespace ==? namespace_for_class
@@ -978,6 +978,7 @@ function! phpcomplete#JumpToDefinition(mode) " {{{
 
 	let tags = phpcomplete#GetTaglist(symbol)
 
+	let symbol_file = fnamemodify(symbol_file, ':p')
 	let tag_position = -1
 	let i = 1
 	for tag in tags
@@ -1003,9 +1004,9 @@ function! phpcomplete#GetCurrentSymbolWithContext() " {{{
 	" Check if we are inside of PHP markup
 	let pos = getpos('.')
 	let phpbegin = searchpairpos('<?', '', '?>', 'bWn',
-			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
+			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
 	let phpend = searchpairpos('<?', '', '?>', 'Wn',
-			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\|comment"')
+			\ 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
 
 	if (phpbegin == [0, 0] && phpend == [0, 0])
 		return ['', '', '', '']
@@ -1120,21 +1121,11 @@ function! phpcomplete#LocateSymbol(symbol, symbol_context, symbol_namespace, cur
 	return unknow_location
 endfunction " }}}
 
-function! phpcomplete#CreateDummyTagFile(symbol, file, line_number) " {{{
-	let tempname = tempname()
-	let content = [
-				\ "!_TAG_FILE_FORMAT\t2",
-				\ "!_TAG_FILE_SORTED\t1",
-				\ a:symbol."\t".fnamemodify(a:file, ':p')."\t".a:line_number.';',
-				\ ]
-	call writefile(content, tempname)
-	return tempname
-endfunction " }}}
-
 function! s:readfileToTmpbuffer(file) " {{{
 	let cfile = join(readfile(a:file), "\n")
 	silent! below 1new
 	silent! 0put =cfile
+	silent! exec "set ft=phpcompletetempbuffer"
 	return [bufnr('$'), bufname('%')]
 endfunction " }}}
 
@@ -1226,12 +1217,11 @@ function! phpcomplete#CompleteUserClass(context, base, sccontent, visibility) " 
 		endif
 	endfor
 
-	let jvars = join(variables, ' ')
-	let svars = split(jvars, '\$')
+	let static_vars = split(join(variables, ' '), '\$')
 	let c_variables = {}
 
 	let var_index = 0
-	for i in svars
+	for i in static_vars
 		let c_var = matchstr(i,
 					\ '^\zs[a-zA-Z_\x7f-\xff][a-zA-Z_0-9\x7f-\xff]*\ze')
 		if c_var != ''
@@ -1360,7 +1350,6 @@ endfunction
 " }}}
 
 function! phpcomplete#GetTaglist(pattern) " {{{
-
 	let cache_checksum = ''
 	if g:phpcomplete_cache_taglists == 1
 		" build a string with  format of "<tagfile>:<mtime>$<tagfile2>:<mtime2>..."
@@ -1724,6 +1713,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 	" Get class name
 	" Class name can be detected in few ways:
 	" @var $myVar class
+	" @var class $myVar
 	" in the same line (php 5.4 (new Class)-> syntax)
 	" line above
 	" or line in tags file
@@ -1802,6 +1792,11 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 		let object_is_array = (object =~ '\v^[^[]+\[' ? 1 : 0)
 		let object = matchstr(object, variable_name_pattern)
 
+		let function_boundary = phpcomplete#GetCurrentFunctionBoundaries()
+		let search_end_line = max([1, function_boundary[0][0]])
+		" -1 makes us ignore the current line (where the completion was invoked
+		let lines = reverse(getline(search_end_line, line('.') - 1))
+
 		" check Constant lookup
 		let constant_object = matchstr(a:context, '\zs'.class_name_pattern.'\ze::')
 		if constant_object != ''
@@ -1810,21 +1805,20 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 
 		if classname_candidate == ''
 			" scan the file backwards from current line for explicit type declaration (@var $variable Classname)
-			let i = 1 " start from the current line - 1
-			while i < a:start_line
-				let line = getline(a:start_line - i)
+			for line in lines
 				" in file lookup for /* @var $foo Class */
 				if line =~# '@var\s\+'.object.'\s\+'.class_name_pattern
 					let classname_candidate = matchstr(line, '@var\s\+'.object.'\s\+\zs'.class_name_pattern.'\(\[\]\)\?')
 					let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, a:current_namespace, a:imports)
 					break
-				elseif line !~ '^\s*$'
-					" type indicator comments should be next to the variable
-					" non empty lines break the search
+				endif
+				" in file lookup for /* @var Class $foo */
+				if line =~# '@var\s\+'.class_name_pattern.'\s\+'.object
+					let classname_candidate = matchstr(line, '@var\s\+\zs'.class_name_pattern.'\(\[\]\)\?\ze'.'\s\+'.object)
+					let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, a:current_namespace, a:imports)
 					break
 				endif
-				let i += 1
-			endwhile
+			endfor
 		endif
 
 		if classname_candidate != ''
@@ -1832,12 +1826,9 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 			" return absolute classname, without leading \
 			return (class_candidate_namespace == '\' || class_candidate_namespace == '') ? classname_candidate : class_candidate_namespace.'\'.classname_candidate
 		endif
-
 		" scan the file backwards from the current line
 		let i = 1
-		while i < a:start_line " {{{
-			let line = getline(a:start_line - i)
-
+		for line in lines " {{{
 			" do in-file lookup of $var = new Class
 			if line =~# '^\s*'.object.'\s*=\s*new\s\+'.class_name_pattern && !object_is_array
 				let classname_candidate = matchstr(line, object.'\c\s*=\s*new\s*\zs'.class_name_pattern.'\ze')
@@ -1890,6 +1881,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 				for arg in args
 					if arg =~# object.'\(,\|$\)'
 						let classname_candidate = matchstr(arg, '\s*\zs'.class_name_pattern.'\ze\s\+'.object)
+						let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, a:current_namespace, a:imports)
 						break
 					endif
 				endfor
@@ -1908,6 +1900,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 					for param in docblock.params
 						if param.name =~? object
 							let classname_candidate = matchstr(param.type, class_name_pattern.'\(\[\]\)\?')
+							let [classname_candidate, class_candidate_namespace] = phpcomplete#ExpandClassName(classname_candidate, a:current_namespace, a:imports)
 							break
 						endif
 					endfor
@@ -2005,7 +1998,7 @@ function! phpcomplete#GetClassName(start_line, context, current_namespace, impor
 			endif
 
 			let i += 1
-		endwhile " }}}
+		endfor " }}}
 
 		if classname_candidate != ''
 			let [classname_candidate, class_candidate_namespace] = phpcomplete#GetCallChainReturnType(classname_candidate, class_candidate_namespace, class_candidate_imports, methodstack)
@@ -2212,19 +2205,21 @@ function! phpcomplete#GetClassContentsStructure(file_path, file_lines, class_nam
 
 	silent! below 1new
 	silent! 0put =cfile
+	silent! exec "setlocal ft=phpcompletetempbuffer"
+
 	call search('\(class\|interface\)\_s\+'.a:class_name.'\(\>\|$\)')
 	let cfline = line('.')
 	call search('{')
 	let endline = line('.')
 
-	let content = join(getline(cfline, endline),"\n")
+	let content = join(getline(cfline, endline), "\n")
 	" Catch extends
 	if content =~? 'extends'
 		let extends_class = matchstr(content, 'class\_s\+'.a:class_name.'\_s\+extends\_s\+\zs'.class_name_pattern.'\ze')
 	else
 		let extends_class = ''
 	endif
-	call searchpair('{', '', '}', 'W')
+	call searchpair('{', '', '}', 'W', 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
 	let classcontent = join(getline(cfline, line('.')), "\n")
 	silent! bw! %
 	let [current_namespace, imports] = phpcomplete#GetCurrentNameSpace(a:file_lines[0:cfline])
@@ -2634,6 +2629,40 @@ function! phpcomplete#GetCurrentNameSpace(file_lines) " {{{
 		let sorted_imports[name] = imports[name]
 	endfor
 	return [current_namespace, sorted_imports]
+endfunction
+" }}}
+
+function! phpcomplete#GetCurrentFunctionBoundaries() " {{{
+	let old_cursor_pos = [line('.'), col('.')]
+	let current_line_no = old_cursor_pos[0]
+	let function_pattern = '\c\(.*\%#\)\@!\_^\s*\zs\(abstract\s\+\|final\s\+\|private\s\+\|protected\s\+\|public\s\+\|static\s\+\)*function\_.\{-}(\_.\{-})\_.\{-}{'
+
+	let func_start_pos = searchpos(function_pattern, 'Wbc')
+	if func_start_pos == [0, 0]
+		call cursor(old_cursor_pos[0], old_cursor_pos[1])
+		return 0
+	endif
+
+	" get the line where the function declaration actually started
+	call search('\cfunction\_.\{-}(\_.\{-})\_.\{-}{', 'Wce')
+
+	" get the position of the function block's closing "}"
+	let func_end_pos = searchpairpos('{', '', '}', 'W', 'synIDattr(synID(line("."), col("."), 0), "name") =~? "string\\|comment"')
+	if func_end_pos == [0, 0]
+		" there is a function start but no end found, assume that we are in a
+		" function but the user did not typed the closing "}" yet and the
+		" function runs to the end of the file
+		let func_end_pos = [line('$'), len(getline(line('$')))]
+	endif
+
+	" Decho func_start_pos[0].' <= '.current_line_no.' && '.current_line_no.' <= '.func_end_pos[0]
+	if func_start_pos[0] <= current_line_no && current_line_no <= func_end_pos[0]
+		call cursor(old_cursor_pos[0], old_cursor_pos[1])
+		return [func_start_pos, func_end_pos]
+	endif
+
+	call cursor(old_cursor_pos[0], old_cursor_pos[1])
+	return 0
 endfunction
 " }}}
 
