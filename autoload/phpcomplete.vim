@@ -955,6 +955,8 @@ function! phpcomplete#JumpToDefinition(mode) " {{{
 		let notfound_commands = 'tag '
 	elseif a:mode == 'split'
 		let notfound_commands = 'split | tag '
+	elseif a:mode == 'vsplit'
+		let notfound_commands = 'vsplit | tag '
 	endif
 
 	let [symbol, symbol_context, symbol_namespace, current_imports] = phpcomplete#GetCurrentSymbolWithContext()
@@ -994,6 +996,8 @@ function! phpcomplete#JumpToDefinition(mode) " {{{
 	else
 		if a:mode == 'split'
 			silent! exec 'split | '.tag_position.'tag '.symbol
+		elseif a:mode == 'vsplit'
+			silent! exec 'vsplit | '.tag_position.'tag '.symbol
 		elseif a:mode == 'normal'
 			silent! exec tag_position.'tag '.symbol
 		endif
